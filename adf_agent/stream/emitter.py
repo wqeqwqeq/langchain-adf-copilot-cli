@@ -52,3 +52,17 @@ class StreamEventEmitter:
     def error(message: str) -> StreamEvent:
         """错误事件"""
         return StreamEvent("error", {"type": "error", "message": message})
+
+    @staticmethod
+    def token_usage(
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int = 0,
+    ) -> StreamEvent:
+        """Token 使用量事件"""
+        return StreamEvent("token_usage", {
+            "type": "token_usage",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens or (input_tokens + output_tokens),
+        })

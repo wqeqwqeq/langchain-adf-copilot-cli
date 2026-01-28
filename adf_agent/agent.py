@@ -19,7 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from .context import ADFAgentContext, ADFConfig
 from .tools import ALL_TOOLS
 from .prompts import build_system_prompt
-from .stream import StreamEventEmitter, ToolCallTracker, is_success, DisplayLimits
+from .stream import StreamEventEmitter, ToolCallTracker, TokenTracker, is_success, DisplayLimits
 
 
 # 加载环境变量（override=True 确保 .env 文件覆盖系统环境变量）
@@ -303,6 +303,7 @@ class ADFAgent:
         config = {"configurable": {"thread_id": thread_id}}
         emitter = StreamEventEmitter()
         tracker = ToolCallTracker()
+        token_tracker = TokenTracker()
 
         full_response = ""
         debug = os.getenv("ADF_DEBUG", "").lower() in ("1", "true", "yes")
@@ -327,6 +328,9 @@ class ADFAgent:
 
                 # 处理 AIMessageChunk / AIMessage
                 if isinstance(chunk, (AIMessageChunk, AIMessage)):
+                    # 更新 token 统计
+                    token_tracker.update(chunk)
+
                     # 处理 content
                     for ev in self._process_chunk_content(chunk, emitter, tracker):
                         if ev.type == "text":
@@ -344,13 +348,26 @@ class ADFAgent:
 
                 # 处理 ToolMessage (工具执行结果)
                 elif hasattr(chunk, "type") and chunk.type == "tool":
+                    # 先获取当前 turn 的 token 使用量（在累加到总计之前）
+                    turn_usage = token_tracker.finalize_turn()
+
                     if debug:
                         tool_name = getattr(chunk, "name", "unknown")
                         print(f"[DEBUG] Processing tool result: {tool_name}")
+
+                    # 处理工具结果
                     for ev in self._process_tool_result(chunk, emitter, tracker):
                         if debug:
                             print(f"[DEBUG] Yielding: {ev.type}")
                         yield ev.data
+
+                    # 发送该 turn 的 token 使用量（在 tool_result 之后）
+                    if turn_usage and not turn_usage.is_empty():
+                        yield emitter.token_usage(
+                            input_tokens=turn_usage.input_tokens,
+                            output_tokens=turn_usage.output_tokens,
+                            total_tokens=turn_usage.total_tokens,
+                        ).data
 
             if debug:
                 print("[DEBUG] Stream completed normally")
@@ -363,6 +380,15 @@ class ADFAgent:
             # 发送错误事件让用户知道发生了什么
             yield emitter.error(str(e)).data
             raise
+
+        # 发送 token 使用量事件（在 done 之前）
+        usage = token_tracker.get_usage()
+        if not usage.is_empty():
+            yield emitter.token_usage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+            ).data
 
         # 发送完成事件
         yield emitter.done(full_response).data

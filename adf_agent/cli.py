@@ -86,6 +86,8 @@ class StreamState:
         self.is_thinking = False
         self.is_responding = False
         self.is_processing = False
+        self.token_usage = None  # TokenUsageInfo dict (total)
+        self.turn_token_usages = []  # Per-turn token usages (aligned with tool_results)
 
     def handle_event(self, event: dict) -> str:
         """处理单个流式事件"""
@@ -140,6 +142,19 @@ class StreamState:
             if not self.response_text:
                 self.response_text = event.get("response", "")
 
+        elif event_type == "token_usage":
+            usage = {
+                "input_tokens": event.get("input_tokens", 0),
+                "output_tokens": event.get("output_tokens", 0),
+                "total_tokens": event.get("total_tokens", 0),
+            }
+            # Per-turn token usage comes right after tool_result
+            # Store it aligned with tool_results
+            if len(self.tool_results) > len(self.turn_token_usages):
+                self.turn_token_usages.append(usage)
+            # Always update total (last token_usage event is the total)
+            self.token_usage = usage
+
         elif event_type == "error":
             self.is_processing = False
             self.is_thinking = False
@@ -156,34 +171,83 @@ class StreamState:
             "response_text": self.response_text,
             "tool_calls": self.tool_calls,
             "tool_results": self.tool_results,
+            "turn_token_usages": self.turn_token_usages,
             "is_thinking": self.is_thinking,
             "is_responding": self.is_responding,
             "is_processing": self.is_processing,
         }
 
 
-def format_tool_result_compact(name: str, content: str, max_lines: int = 5) -> list:
+def display_token_usage(token_usage: dict) -> None:
+    """显示 token 使用量"""
+    if not token_usage:
+        return
+
+    input_tokens = token_usage.get("input_tokens", 0)
+    output_tokens = token_usage.get("output_tokens", 0)
+    total_tokens = token_usage.get("total_tokens", 0)
+
+    if total_tokens == 0:
+        return
+
+    # 格式化数字，添加千位分隔符
+    def fmt(n: int) -> str:
+        return f"{n:,}"
+
+    # 分隔线和 token 信息
+    console.print("─" * 40, style="dim")
+    console.print(f"[dim]Tokens: {fmt(input_tokens)} input / {fmt(output_tokens)} output | Total: {fmt(total_tokens)}[/dim]")
+
+
+def format_turn_token_usage(token_usage: dict | None) -> Text | None:
+    """格式化单个 turn 的 token 使用量（内联显示）"""
+    if not token_usage:
+        return None
+
+    input_tokens = token_usage.get("input_tokens", 0)
+    output_tokens = token_usage.get("output_tokens", 0)
+
+    if input_tokens == 0 and output_tokens == 0:
+        return None
+
+    # 格式化数字，添加千位分隔符
+    def fmt(n: int) -> str:
+        return f"{n:,}"
+
+    return Text(f"  ↳ {fmt(input_tokens)} in / {fmt(output_tokens)} out", style="dim")
+
+
+def format_tool_result_compact(
+    name: str,
+    content: str,
+    max_lines: int = 5,
+    token_usage: dict | None = None,
+) -> list:
     """使用树形格式显示工具结果"""
     elements = []
 
     if not content.strip():
         elements.append(Text("  └ (empty)", style="dim"))
-        return elements
+    else:
+        lines = content.strip().split("\n")
+        total_lines = len(lines)
+        display_lines = lines[:max_lines]
 
-    lines = content.strip().split("\n")
-    total_lines = len(lines)
-    display_lines = lines[:max_lines]
+        for i, line in enumerate(display_lines):
+            prefix = "└" if i == 0 else " "
+            if len(line) > 80:
+                line = line[:77] + "..."
+            style = "dim" if is_success(content) else "red dim"
+            elements.append(Text(f"  {prefix} {line}", style=style))
 
-    for i, line in enumerate(display_lines):
-        prefix = "└" if i == 0 else " "
-        if len(line) > 80:
-            line = line[:77] + "..."
-        style = "dim" if is_success(content) else "red dim"
-        elements.append(Text(f"  {prefix} {line}", style=style))
+        remaining = total_lines - max_lines
+        if remaining > 0:
+            elements.append(Text(f"    ... +{remaining} lines", style="dim italic"))
 
-    remaining = total_lines - max_lines
-    if remaining > 0:
-        elements.append(Text(f"    ... +{remaining} lines", style="dim italic"))
+    # 添加 token 使用量显示（在结果下方）
+    token_text = format_turn_token_usage(token_usage)
+    if token_text:
+        elements.append(token_text)
 
     return elements
 
@@ -215,6 +279,8 @@ def display_final_results(
             has_result = i < len(state.tool_results)
             tr = state.tool_results[i] if has_result else None
             content = tr.get('content', '') if tr else ''
+            # 获取该 turn 的 token 使用量
+            turn_tokens = state.turn_token_usages[i] if i < len(state.turn_token_usages) else None
 
             if has_result and is_success(content):
                 status = ToolStatus.SUCCESS
@@ -237,6 +303,7 @@ def display_final_results(
                     tr['name'],
                     content,
                     max_lines=10,
+                    token_usage=turn_tokens,
                 )
                 for elem in result_elements:
                     console.print(elem)
@@ -255,12 +322,16 @@ def display_final_results(
             console.print(Markdown(state.response_text))
             console.print()
 
+    # 显示 token 使用量
+    display_token_usage(state.token_usage)
+
 
 def create_streaming_display(
     thinking_text: str = "",
     response_text: str = "",
     tool_calls: list = None,
     tool_results: list = None,
+    turn_token_usages: list = None,
     is_thinking: bool = False,
     is_responding: bool = False,
     is_waiting: bool = False,
@@ -271,6 +342,7 @@ def create_streaming_display(
     elements = []
     tool_calls = tool_calls or []
     tool_results = tool_results or []
+    turn_token_usages = turn_token_usages or []
 
     if max_heights is None:
         max_heights = {"thinking": 10, "tools": 10, "response": 15}
@@ -304,6 +376,8 @@ def create_streaming_display(
         for i, tc in enumerate(tool_calls):
             has_result = i < len(tool_results)
             tr = tool_results[i] if has_result else None
+            # 获取该 turn 的 token 使用量
+            turn_tokens = turn_token_usages[i] if i < len(turn_token_usages) else None
 
             if has_result:
                 content = tr.get('content', '') if tr else ''
@@ -328,8 +402,9 @@ def create_streaming_display(
                     tr['name'],
                     tr.get('content', ''),
                     max_lines=lines_per_tool,
+                    token_usage=turn_tokens,
                 )
-                elements.extend(result_elements[:lines_per_tool])
+                elements.extend(result_elements[:lines_per_tool + 1])  # +1 for token line
             else:
                 spinner = Spinner("dots", text=" 执行中...", style="yellow")
                 elements.append(spinner)
