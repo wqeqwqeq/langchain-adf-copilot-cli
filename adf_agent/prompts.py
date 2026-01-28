@@ -60,35 +60,34 @@ DO NOT guess or make up resource group or factory names."""
 - `exec_python`: Execute Python code for data analysis
 
 ### ADF Tools
-- `adf_pipeline_list`: List all pipelines (saves to workspace/pipelines.json)
-- `adf_pipeline_get`: Get pipeline definition (saves to workspace/pipelines/{{name}}.json)
-- `adf_linked_service_list`: List linked services (saves to workspace/linked_services.json)
-- `adf_linked_service_get`: Get linked service details
+- `adf_pipeline_list`: List all pipelines (saves to session directory)
+- `adf_pipeline_get`: Get pipeline definition (saves to session directory)
+- `adf_linked_service_list`: List linked services (saves to session directory)
+- `adf_linked_service_get`: Get linked service details (saves to session directory)
 - `adf_linked_service_test`: Test linked service connection
-- `adf_integration_runtime_list`: List Integration Runtimes
-- `adf_integration_runtime_get`: Get IR status
+- `adf_integration_runtime_list`: List Integration Runtimes (saves to session directory)
+- `adf_integration_runtime_get`: Get IR status (saves to session directory)
 - `adf_integration_runtime_enable`: Enable interactive authoring for Managed IR
 
 ## Data Analysis Workflow
 
-ADF tools save data to the `workspace/` directory to avoid cluttering the context.
-Use `exec_python` to analyze the saved JSON data.
+ADF tools save data to the session directory (`workspace/sessions/{{timestamp}}/`) to avoid cluttering the context.
 
-**Example: Find pipelines using Snowflake**
-```
-1. adf_linked_service_list(filter_type="Snowflake")  # Get Snowflake services
-2. adf_pipeline_list()  # Get all pipelines
-3. exec_python to search pipeline definitions for linked service references
-```
+**When to use exec_python:**
+- Complex analysis across multiple files
+- Filtering, searching, or aggregating data
+- NOT needed for simple list/get operations
 
-**Example: Analyze linked service types**
-```python
-# In exec_python:
-services = load_json("linked_services.json")
-from collections import Counter
-types = Counter(s["properties"]["type"] for s in services)
-for t, count in types.most_common():
-    print(f"{{t}}: {{count}}")
+**Before writing exec_python code:**
+If you need to analyze JSON data, first use `read_file` to understand the JSON structure.
+In case there are multiple JSON file returned, pick one or two of them to read and understand the structure for exec_python. 
+This helps you write correct code and avoid KeyError.
+
+**Example workflow:**
+```
+1. adf_linked_service_list()  # Get list, saves to linked_services.json
+2. read_file("linked_services.json")  # Understand JSON structure (if needed)
+3. exec_python(...)  # Now write correct code based on actual structure
 ```
 
 ## exec_python Error Handling
@@ -101,7 +100,7 @@ When `exec_python` fails:
 
 **Common fixes:**
 - `KeyError`: Check JSON structure with `print(json.dumps(data[0], indent=2)[:500])`
-- `FileNotFoundError`: Use `list_dir("workspace")` to see available files
+- `FileNotFoundError`: Use `list_dir()` to see available files in session directory
 - `SyntaxError`: Double-check Python syntax
 
 If still failing after 3 attempts:
@@ -151,7 +150,7 @@ To test a linked service connection:
 
 Always provide clear, structured responses:
 1. Summarize what you found
-2. Reference saved files (e.g., "Details saved to workspace/pipelines.json")
+2. Reference saved files (the tool output shows the full path)
 3. Suggest next steps if applicable
 
 When showing data, format as tables when appropriate:

@@ -32,7 +32,7 @@ from .azure_adf_client import ADFClient
 ALL_TOOLS = [
     # General tools
     read_file,
-    write_file,
+    # write_file,
     glob,
     grep,
     list_dir,
@@ -51,7 +51,7 @@ ALL_TOOLS = [
 __all__ = [
     # General tools
     "read_file",
-    "write_file",
+    # "write_file",
     "glob",
     "grep",
     "list_dir",

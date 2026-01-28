@@ -278,7 +278,7 @@ def exec_python(code: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     Args:
         code: Python code to execute (use print() for output)
     """
-    workspace = runtime.context.workspace
+    session_dir = runtime.context.session_dir
 
     setup_code = f'''
 import json
@@ -288,19 +288,19 @@ import re
 from pathlib import Path
 from collections import Counter, defaultdict
 
-workspace = Path({repr(str(workspace))})
-os.chdir(workspace)
+session_dir = Path({repr(str(session_dir))})
+os.chdir(session_dir)
 
 def load_json(filename):
-    """Load JSON file from workspace"""
-    filepath = workspace / filename
+    """Load JSON file from session directory"""
+    filepath = session_dir / filename
     if not filepath.exists():
-        raise FileNotFoundError(f"File not found: {{filename}}. Use list_dir('workspace') to see available files.")
+        raise FileNotFoundError(f"File not found: {{filename}}. Use list_dir() to see available files.")
     return json.loads(filepath.read_text(encoding="utf-8"))
 
 def save_json(filename, data):
-    """Save data as JSON to workspace"""
-    filepath = workspace / filename
+    """Save data as JSON to session directory"""
+    filepath = session_dir / filename
     filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved to {{filename}}")
 
@@ -321,12 +321,12 @@ def pretty_print(data, max_items=10):
             capture_output=True,
             text=True,
             timeout=60,
-            cwd=str(workspace),
+            cwd=str(session_dir),
         )
 
         # 返回详细错误信息，便于 agent 修复
         if result.returncode != 0:
-            return f"""[FAILED] Exit code: {result.returncode}
+            output = f"""[FAILED] Exit code: {result.returncode}
 
 --- stdout ---
 {result.stdout.rstrip() or '(empty)'}
@@ -336,20 +336,32 @@ def pretty_print(data, max_items=10):
 
 Hint: Analyze the error above, fix your code, and try exec_python again.
 Common fixes:
-- KeyError: Check JSON structure with `print(json.dumps(data[0], indent=2)[:500])`
-- FileNotFoundError: Use `list_dir("workspace")` to see available files
+- KeyError: Use read_file to check JSON structure first
+- FileNotFoundError: Use list_dir() to see available files
 - SyntaxError: Double-check Python syntax
 """
+            # 保存完整脚本到 session 目录（包含 helper 函数）
+            runtime.context.save_script(full_code, output, success=False)
+            return output
 
         output = result.stdout.rstrip()
         if not output:
-            return "[OK]\n\n(no output - use print() to display results)"
-        return f"[OK]\n\n{output}"
+            output_msg = "[OK]\n\n(no output - use print() to display results)"
+        else:
+            output_msg = f"[OK]\n\n{output}"
+
+        # 保存完整脚本到 session 目录（包含 helper 函数）
+        runtime.context.save_script(full_code, output_msg, success=True)
+        return output_msg
 
     except subprocess.TimeoutExpired:
-        return "[FAILED] Execution timed out after 60 seconds."
+        error_msg = "[FAILED] Execution timed out after 60 seconds."
+        runtime.context.save_script(full_code, error_msg, success=False)
+        return error_msg
     except Exception as e:
-        return f"[FAILED] {str(e)}"
+        error_msg = f"[FAILED] {str(e)}"
+        runtime.context.save_script(full_code, error_msg, success=False)
+        return error_msg
 
 
 # 导出所有通用工具

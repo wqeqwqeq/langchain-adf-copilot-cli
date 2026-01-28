@@ -74,24 +74,20 @@ def adf_pipeline_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
         # 获取所有 pipeline
         pipelines_data = client.list_pipelines()
 
-        # 保存到 workspace
-        workspace = runtime.context.workspace
-        output_file = workspace / "pipelines.json"
+        # 保存到 session_dir
+        session_dir = runtime.context.session_dir
+        output_file = session_dir / "pipelines.json"
         output_file.write_text(json.dumps(pipelines_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 返回摘要
         names = [p.get("name", "unknown") for p in pipelines_data]
         return f"""[OK]
 
-Found {len(pipelines_data)} pipelines. Full data saved to workspace/pipelines.json
+Found {len(pipelines_data)} pipelines. Full data saved to {output_file}
 
 Pipeline names:
 {chr(10).join(f"  - {name}" for name in names[:50])}
 {"  ... and more" if len(names) > 50 else ""}
-
-Use exec_python to analyze the data:
-  data = load_json("pipelines.json")
-  print(json.dumps(data[0], indent=2))  # View first pipeline structure
 """
 
     except Exception as e:
@@ -119,9 +115,9 @@ def adf_pipeline_get(name: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
         # 获取 pipeline 定义
         pipeline_data = client.get_pipeline(name)
 
-        # 保存到 workspace/pipelines/
-        workspace = runtime.context.workspace
-        pipelines_dir = workspace / "pipelines"
+        # 保存到 session_dir/pipelines/
+        session_dir = runtime.context.session_dir
+        pipelines_dir = session_dir / "pipelines"
         pipelines_dir.mkdir(parents=True, exist_ok=True)
         output_file = pipelines_dir / f"{name}.json"
         output_file.write_text(json.dumps(pipeline_data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -137,7 +133,7 @@ Pipeline: {name}
 Activities ({len(activities)}): {', '.join(activity_names[:10])}{"..." if len(activity_names) > 10 else ""}
 Parameters: {', '.join(parameters) if parameters else "(none)"}
 
-Full definition saved to workspace/pipelines/{name}.json
+Full definition saved to {output_file}
 
 Use exec_python to analyze:
   pipeline = load_json("pipelines/{name}.json")
@@ -171,9 +167,9 @@ def adf_linked_service_list(filter_type: Optional[str] = None, runtime: ToolRunt
         # 获取所有 linked services
         services = client.list_linked_services(filter_by_type=filter_type)
 
-        # 保存到 workspace
-        workspace = runtime.context.workspace
-        output_file = workspace / "linked_services.json"
+        # 保存到 session_dir
+        session_dir = runtime.context.session_dir
+        output_file = session_dir / "linked_services.json"
         output_file.write_text(json.dumps(services, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 返回摘要
@@ -186,17 +182,10 @@ def adf_linked_service_list(filter_type: Optional[str] = None, runtime: ToolRunt
 
         return f"""[OK]
 
-Found {len(services)} linked services{type_filter_msg}. Full data saved to workspace/linked_services.json
+Found {len(services)} linked services{type_filter_msg}. Full data saved to {output_file}
 
 {chr(10).join(summary_lines)}
 {"  ... and more" if len(services) > 50 else ""}
-
-Use exec_python to analyze:
-  services = load_json("linked_services.json")
-  # Group by type
-  from collections import Counter
-  types = Counter(s["properties"]["type"] for s in services)
-  print(types)
 """
 
     except Exception as e:
@@ -223,9 +212,9 @@ def adf_linked_service_get(name: str, runtime: ToolRuntime[ADFAgentContext]) -> 
         # 获取详情
         service = client.get_linked_service(name)
 
-        # 保存到 workspace
-        workspace = runtime.context.workspace
-        output_file = workspace / f"linked_service_{name}.json"
+        # 保存到 session_dir
+        session_dir = runtime.context.session_dir
+        output_file = session_dir / f"linked_service_{name}.json"
         output_file.write_text(json.dumps(service, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 提取摘要
@@ -259,11 +248,7 @@ Linked Service: {name}
 Type: {svc_type}
 {chr(10).join(key_info) if key_info else "(no additional info extracted)"}
 
-Full definition saved to workspace/linked_service_{name}.json
-
-Use exec_python to analyze:
-  service = load_json("linked_service_{name}.json")
-  print(json.dumps(service["properties"], indent=2))
+Full definition saved to {output_file}
 """
 
     except Exception as e:
@@ -343,9 +328,9 @@ def adf_integration_runtime_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
         # 获取所有 Integration Runtimes
         irs_data = client.list_integration_runtimes()
 
-        # 保存到 workspace
-        workspace = runtime.context.workspace
-        output_file = workspace / "integration_runtimes.json"
+        # 保存到 session_dir
+        session_dir = runtime.context.session_dir
+        output_file = session_dir / "integration_runtimes.json"
         output_file.write_text(json.dumps(irs_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 返回摘要
@@ -357,15 +342,13 @@ def adf_integration_runtime_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
 
         return f"""[OK]
 
-Found {len(irs_data)} Integration Runtimes. Full data saved to workspace/integration_runtimes.json
+Found {len(irs_data)} Integration Runtimes. Full data saved to {output_file}
 
 {chr(10).join(summary_lines)}
 
 Types:
 - Managed: Azure-hosted, supports interactive authoring
 - SelfHosted: On-premises or VM-hosted
-
-Use adf_integration_runtime_get(name) to check status and interactive authoring.
 """
 
     except Exception as e:
@@ -393,9 +376,9 @@ def adf_integration_runtime_get(name: str, runtime: ToolRuntime[ADFAgentContext]
         # 获取状态
         status = client.get_integration_runtime_status(name)
 
-        # 保存到 workspace
-        workspace = runtime.context.workspace
-        output_file = workspace / f"ir_{name}_status.json"
+        # 保存到 session_dir
+        session_dir = runtime.context.session_dir
+        output_file = session_dir / f"ir_{name}_status.json"
         output_file.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
         # 提取关键信息
@@ -415,7 +398,7 @@ Integration Runtime: {name}
 Type: {ir_type}
 Interactive Authoring: {interactive_status}
 
-Full status saved to workspace/ir_{name}_status.json
+Full status saved to {output_file}
 
 {"Note: Interactive authoring is required for connection testing. Use adf_integration_runtime_enable to enable it." if interactive_status == "Disabled" else ""}
 """

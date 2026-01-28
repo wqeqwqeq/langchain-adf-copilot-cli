@@ -27,6 +27,7 @@ from rich.text import Text
 from rich.spinner import Spinner
 
 from .agent import ADFAgent, check_api_credentials, load_adf_config
+from .context import _use_workspace, ADFAgentContext
 from .stream import (
     ToolResultFormatter,
     has_args,
@@ -372,8 +373,12 @@ def print_banner():
     console.print(Panel(banner, title="ADF Agent", border_style="cyan"))
 
 
-def show_config_status():
-    """显示配置状态"""
+def show_config_status(agent: ADFAgent = None):
+    """显示配置状态
+
+    Args:
+        agent: 可选，如果提供则显示实际的 session_dir
+    """
     config = load_adf_config()
 
     if config.is_configured():
@@ -382,6 +387,17 @@ def show_config_status():
         missing = config.missing_fields()
         console.print(f"[yellow]![/yellow] ADF config incomplete - missing: {', '.join(missing)}")
         console.print("[dim]  Agent will ask when ADF operations are needed[/dim]")
+
+    # 显示存储位置（仅当使用 temp 目录时）
+    if not _use_workspace():
+        if agent:
+            # 使用 Agent 的实际 session_dir
+            console.print(f"[dim]📁 Session dir: {agent.context.session_dir}[/dim]")
+        else:
+            # 只显示 base 路径
+            import tempfile
+            base_path = Path(tempfile.gettempdir()) / "adf_agent" / "sessions"
+            console.print(f"[dim]📁 Output dir: {base_path}/[/dim]")
 
 
 def cmd_run(prompt: str, enable_thinking: bool = True):
@@ -436,11 +452,11 @@ def cmd_interactive(enable_thinking: bool = True):
         console.print("Please set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env file")
         sys.exit(1)
 
-    # 显示配置状态
-    show_config_status()
-    console.print()
-
     agent = ADFAgent(enable_thinking=enable_thinking)
+
+    # 显示配置状态（传入 agent 以显示实际的 session_dir）
+    show_config_status(agent)
+    console.print()
 
     thinking_status = "[green]enabled[/green]" if enable_thinking else "[dim]disabled[/dim]"
     console.print(f"[dim]Extended Thinking: {thinking_status}[/dim]")
@@ -475,7 +491,7 @@ def cmd_interactive(enable_thinking: bool = True):
                 continue
 
             if user_input.lower() == "/config":
-                show_config_status()
+                show_config_status(agent)
                 continue
 
             # 运行 agent
