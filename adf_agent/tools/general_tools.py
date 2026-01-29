@@ -253,6 +253,16 @@ def list_dir(path: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
         return f"[FAILED] {str(e)}"
 
 
+_EXEC_RUNTIME_SRC = Path(__file__).with_name("_exec_runtime.py")
+
+
+def _ensure_runtime(session_dir: Path) -> None:
+    """首次调用时将 _exec_runtime.py 部署到 session_dir，后续跳过。"""
+    dest = session_dir / "_exec_runtime.py"
+    if not dest.exists():
+        dest.write_text(_EXEC_RUNTIME_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 @tool
 def exec_python(code: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
@@ -280,38 +290,13 @@ def exec_python(code: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
     session_dir = runtime.context.session_dir
 
-    setup_code = f'''
-import json
-import os
-import sys
-import re
-from pathlib import Path
-from collections import Counter, defaultdict
+    # 首次调用时把公共 helpers 写入 session_dir
+    _ensure_runtime(session_dir)
 
-session_dir = Path({repr(str(session_dir))})
-os.chdir(session_dir)
-
-def load_json(filename):
-    """Load JSON file from session directory"""
-    filepath = session_dir / filename
-    if not filepath.exists():
-        raise FileNotFoundError(f"File not found: {{filename}}. Use list_dir() to see available files.")
-    return json.loads(filepath.read_text(encoding="utf-8"))
-
-def save_json(filename, data):
-    """Save data as JSON to session directory"""
-    filepath = session_dir / filename
-    filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Saved to {{filename}}")
-
-def pretty_print(data, max_items=10):
-    """Pretty print JSON data with truncation"""
-    if isinstance(data, list) and len(data) > max_items:
-        print(f"Showing first {{max_items}} of {{len(data)}} items:")
-        print(json.dumps(data[:max_items], indent=2, ensure_ascii=False))
-    else:
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-'''
+    setup_code = (
+        f"from _exec_runtime import *\n"
+        f"_init({str(session_dir)!r})\n"
+    )
 
     full_code = setup_code + "\n" + code
 
