@@ -26,10 +26,17 @@ from .adf_tools import (
     ADF_TOOLS,
 )
 
+from .skill_tools import (
+    load_skill,
+    SKILL_TOOLS,
+)
+
 from .azure_adf_client import ADFClient
 
 # 所有工具列表
 ALL_TOOLS = [
+    # Skill tools
+    load_skill,
     # General tools
     read_file,
     # write_file,
@@ -49,6 +56,9 @@ ALL_TOOLS = [
 ]
 
 __all__ = [
+    # Skill tools
+    "load_skill",
+    "SKILL_TOOLS",
     # General tools
     "read_file",
     # "write_file",

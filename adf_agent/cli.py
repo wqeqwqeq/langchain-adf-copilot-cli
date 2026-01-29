@@ -10,6 +10,7 @@ ADF Agent CLI
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from rich.live import Live
 from rich.text import Text
 from rich.spinner import Spinner
 
-from .agent import ADFAgent, check_api_credentials, load_adf_config
+from .agent import ADFAgent, load_adf_config
 from .context import _use_workspace, ADFAgentContext
 from .stream import (
     ToolResultFormatter,
@@ -478,6 +479,214 @@ def create_streaming_display(
     return Group(*elements) if elements else Text("⏳ Processing...", style="dim")
 
 
+# === Onboarding ===
+
+def _needs_onboarding() -> bool:
+    """检查是否需要 onboarding（没有任何 API 凭证）"""
+    has_anthropic = bool(
+        os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")
+    )
+    has_foundry = bool(os.getenv("ANTHROPIC_FOUNDRY_API_KEY"))
+    return not has_anthropic and not has_foundry
+
+
+def _read_key() -> str | None:
+    """读取单个按键，处理方向键转义序列"""
+    import tty, termios
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == '\x1b':
+            sys.stdin.read(1)  # skip '['
+            arrow = sys.stdin.read(1)
+            return {'A': 'up', 'B': 'down'}.get(arrow)
+        if ch in ('\r', '\n'):
+            return 'enter'
+        if ch == '\x03':
+            raise KeyboardInterrupt
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return None
+
+
+def _select(title: str, options: list[tuple[str, str]], default: int = 0) -> str | None:
+    """
+    Arrow-key inline selector.
+
+    Args:
+        title: 标题
+        options: [(value, label), ...]
+        default: 默认选中索引
+
+    Returns:
+        选中的 value，Ctrl+C 返回 None
+    """
+    selected = default
+    n = len(options)
+    first = True
+
+    def render():
+        nonlocal first
+        if not first:
+            sys.stdout.write(f"\033[{n}A")  # move cursor up
+        first = False
+        for i, (_, label) in enumerate(options):
+            sys.stdout.write('\033[2K')  # clear line
+            if i == selected:
+                sys.stdout.write(f"    \033[36m▸ {label}\033[0m\n")
+            else:
+                sys.stdout.write(f"      {label}\n")
+        sys.stdout.flush()
+
+    console.print(f"  [bold]{title}[/bold] [dim](↑↓ select, Enter confirm)[/dim]")
+    render()
+
+    try:
+        while True:
+            key = _read_key()
+            if key == 'up':
+                selected = (selected - 1) % n
+                render()
+            elif key == 'down':
+                selected = (selected + 1) % n
+                render()
+            elif key == 'enter':
+                return options[selected][0]
+    except KeyboardInterrupt:
+        console.print()
+        return None
+
+
+def _update_env_file(env_path: Path, updates: dict[str, str]):
+    """更新 .env 文件中的 key=value，处理重复 key"""
+    content = env_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+    updated_keys = set()
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped or stripped.startswith('#'):
+            new_lines.append(line)
+            continue
+
+        key = stripped.split('=', 1)[0].strip()
+
+        if key in updates and key not in updated_keys:
+            new_lines.append(f"{key}={updates[key]}")
+            updated_keys.add(key)
+        elif key in updates:
+            # 重复的 key，注释掉
+            new_lines.append(f"# {line}")
+        else:
+            new_lines.append(line)
+
+    # 追加文件中不存在的 key
+    for key, value in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={value}")
+
+    env_path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
+
+
+def run_onboarding() -> bool:
+    """
+    交互式 onboarding：引导用户配置 API 凭证。
+
+    Returns:
+        True 如果配置成功完成
+    """
+    console.print()
+    console.print(Panel(
+        "[bold]Welcome to ADF Agent![/bold]\n\n"
+        "No API credentials detected. Let's set up your environment.",
+        border_style="cyan",
+    ))
+    console.print()
+
+    # Step 1: Provider
+    provider = _select("API Provider", [
+        ("anthropic", "Claude API (Anthropic)"),
+        ("azure_foundry", "Claude API on Azure AI Foundry"),
+    ])
+    if provider is None:
+        return False
+
+    is_foundry = provider == "azure_foundry"
+    console.print()
+
+    # Step 2: Model
+    model = _select("Model", [
+        ("claude-sonnet-4-5", "claude-sonnet-4-5 (recommended)"),
+        ("claude-opus-4-5", "claude-opus-4-5"),
+        ("claude-haiku-4-5", "claude-haiku-4-5"),
+    ])
+    if model is None:
+        return False
+
+    console.print()
+
+    # Step 3: API Key
+    console.print("  [bold]API Key[/bold]")
+    if is_foundry:
+        api_key = input("    Azure Foundry API Key: ").strip()
+    else:
+        api_key = input("    Anthropic API Key: ").strip()
+
+    if not api_key:
+        console.print("  [red]API key is required.[/red]")
+        return False
+
+    # Step 4: Base URL (Foundry only)
+    base_url = ""
+    if is_foundry:
+        console.print()
+        console.print("  [bold]Azure Foundry Base URL[/bold]")
+        console.print("    [dim]e.g. https://<resource>.services.ai.azure.com/anthropic[/dim]")
+        base_url = input("    Base URL: ").strip()
+        if not base_url:
+            console.print("  [red]Base URL is required for Azure Foundry.[/red]")
+            return False
+
+    # --- 写入 .env ---
+    env_file = Path.cwd() / ".env"
+    env_example = Path.cwd() / ".env.example"
+
+    if not env_file.exists() and env_example.exists():
+        shutil.copy2(env_example, env_file)
+    elif not env_file.exists():
+        env_file.touch()
+
+    updates = {"CLAUDE_MODEL": model}
+    if is_foundry:
+        updates["CLAUDE_PROVIDER"] = "azure_foundry"
+        updates["ANTHROPIC_FOUNDRY_API_KEY"] = api_key
+        updates["ANTHROPIC_FOUNDRY_BASE_URL"] = base_url
+    else:
+        updates["CLAUDE_PROVIDER"] = "anthropic"
+        updates["ANTHROPIC_AUTH_TOKEN"] = api_key
+
+    _update_env_file(env_file, updates)
+
+    # 完成提示
+    provider_label = "Azure AI Foundry" if is_foundry else "Anthropic"
+    console.print()
+    console.print(Panel(
+        f"[green]Configuration saved to .env[/green]\n\n"
+        f"  Provider: [bold]{provider_label}[/bold]\n"
+        f"  Model:    [bold]{model}[/bold]\n\n"
+        f"Run [bold cyan]adf_agent[/bold cyan] again to start.",
+        border_style="green",
+        title="Setup Complete",
+    ))
+
+    return True
+
+
 def print_banner():
     """打印欢迎横幅"""
     banner = """
@@ -524,11 +733,6 @@ def cmd_run(prompt: str, enable_thinking: bool = True):
     console.print(Panel(f"[bold cyan]User Request:[/bold cyan]\n{prompt}"))
     console.print()
 
-    if not check_api_credentials():
-        console.print("[red]Error: API credentials not set[/red]")
-        console.print("Please set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env file")
-        sys.exit(1)
-
     agent = ADFAgent(enable_thinking=enable_thinking)
 
     console.print("[dim]Running agent...[/dim]\n")
@@ -565,11 +769,6 @@ def cmd_run(prompt: str, enable_thinking: bool = True):
 def cmd_interactive(enable_thinking: bool = True):
     """交互式对话模式"""
     print_banner()
-
-    if not check_api_credentials():
-        console.print("[red]Error: API credentials not set[/red]")
-        console.print("Please set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env file")
-        sys.exit(1)
 
     agent = ADFAgent(enable_thinking=enable_thinking)
 
@@ -725,6 +924,11 @@ Examples:
     # 设置工作目录
     if args.cwd:
         os.chdir(args.cwd)
+
+    # Onboarding: 检查 API 凭证，缺失时引导配置
+    if _needs_onboarding():
+        run_onboarding()
+        sys.exit(0)
 
     # thinking 开关
     enable_thinking = not args.no_thinking

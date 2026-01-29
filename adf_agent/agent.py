@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .context import ADFAgentContext, ADFConfig
+from .skill_loader import SkillLoader
 from .tools import ALL_TOOLS
 from .prompts import build_system_prompt
 from .stream import StreamEventEmitter, ToolCallTracker, TokenTracker, is_success, DisplayLimits
@@ -137,6 +138,7 @@ class ADFAgent:
         enable_thinking: bool = True,
         thinking_budget: int = DEFAULT_THINKING_BUDGET,
         adf_config: Optional[ADFConfig] = None,
+        skill_paths: Optional[list[Path]] = None,
     ):
         """
         初始化 Agent
@@ -149,6 +151,7 @@ class ADFAgent:
             enable_thinking: 是否启用 Extended Thinking
             thinking_budget: thinking 的 token 预算
             adf_config: ADF 配置，如果未提供则从环境变量加载
+            skill_paths: Skills 搜索路径列表，默认为 .claude/skills/ 和 ~/.claude/skills/
         """
         # thinking 配置
         self.enable_thinking = enable_thinking
@@ -166,14 +169,18 @@ class ADFAgent:
         # 加载 ADF 配置
         self.adf_config = adf_config or load_adf_config()
 
-        # 构建 system prompt（可选启用 prompt caching）
-        enable_cache = os.getenv("ENABLE_PROMPT_CACHE", "true").lower() in ("1", "true", "yes")
-        self.system_prompt = build_system_prompt(self.adf_config, enable_cache=enable_cache)
+        # 初始化 Skills 加载器
+        self.skill_loader = SkillLoader(skill_paths)
+        skills = self.skill_loader.scan_skills()
+
+        # 构建 system prompt
+        self.system_prompt = build_system_prompt(self.adf_config, skills=skills)
 
         # 创建上下文（供 tools 使用）
         self.context = ADFAgentContext(
             working_directory=self.working_directory,
             adf_config=self.adf_config,
+            skill_loader=self.skill_loader,
         )
 
         # 创建 LangChain Agent
@@ -589,6 +596,7 @@ def create_adf_agent(
     working_directory: Optional[Path] = None,
     enable_thinking: bool = True,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
+    skill_paths: Optional[list[Path]] = None,
 ) -> ADFAgent:
     """
     便捷函数：创建 ADF Agent
@@ -598,6 +606,7 @@ def create_adf_agent(
         working_directory: 工作目录
         enable_thinking: 是否启用 Extended Thinking
         thinking_budget: thinking 的 token 预算
+        skill_paths: Skills 搜索路径列表
 
     Returns:
         配置好的 ADFAgent 实例
@@ -607,4 +616,5 @@ def create_adf_agent(
         working_directory=working_directory,
         enable_thinking=enable_thinking,
         thinking_budget=thinking_budget,
+        skill_paths=skill_paths,
     )

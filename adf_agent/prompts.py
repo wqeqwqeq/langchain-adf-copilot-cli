@@ -4,18 +4,48 @@ ADF Agent System Prompt
 定义 Agent 的行为指导和领域知识。
 """
 
+from __future__ import annotations
+
 from langchain_core.messages import SystemMessage
 
 from .context import ADFConfig
+from .skill_loader import SkillMetadata
 
 
-def build_system_prompt(adf_config: ADFConfig, enable_cache: bool = False) -> SystemMessage:
+def build_skills_section(skills: list[SkillMetadata]) -> str:
+    """
+    构建 Skills 目录文本
+
+    Args:
+        skills: Skills 元数据列表
+
+    Returns:
+        Skills 目录文本，用于注入 system prompt
+    """
+    section = "## Available Skills\n\n"
+    section += "You have access to the following specialized skills:\n\n"
+    for skill in skills:
+        section += skill.to_prompt_line() + "\n"
+    section += "\n"
+    section += "### How to Use Skills\n\n"
+    section += "1. **Discover**: Review the skills list above\n"
+    section += "2. **Load**: When a user request matches a skill's description, "
+    section += "use `load_skill(skill_name)` to get detailed instructions\n"
+    section += "3. **Execute**: Follow the skill's instructions\n\n"
+    section += "**Important**: Only load a skill when it's relevant to the user's request.\n"
+    return section
+
+
+def build_system_prompt(
+    adf_config: ADFConfig,
+    skills: list[SkillMetadata] | None = None,
+) -> SystemMessage:
     """
     构建系统提示
 
     Args:
         adf_config: ADF 配置（用于显示当前配置状态）
-        enable_cache: 是否启用 prompt caching（添加 cache_control 标记）
+        skills: Skills 元数据列表（可选，用于注入 skills 目录）
     """
     # 配置状态信息
     if adf_config.is_configured():
@@ -107,21 +137,6 @@ If still failing after 3 attempts:
 - Show the error message
 - Ask for guidance or alternative approach
 
-## Testing Linked Service Connections
-
-To test a linked service connection:
-1. Check if it uses a Managed Integration Runtime
-2. If yes, enable interactive authoring first: `adf_integration_runtime_enable`
-3. Then test: `adf_linked_service_test`
-
-**Workflow:**
-```
-1. adf_linked_service_get("my-service")  # Check connectVia for IR name
-2. adf_integration_runtime_get("ir-name")  # Check if interactive authoring is enabled
-3. adf_integration_runtime_enable("ir-name", minutes=10)  # Enable if needed
-4. adf_linked_service_test("my-service")  # Now test the connection
-```
-
 ## ADF Domain Knowledge
 
 ### Linked Service Types
@@ -165,7 +180,10 @@ When showing data, format as tables when appropriate:
 Respond in the same language as the user's query. If the user writes in Chinese, respond in Chinese.
 """
 
-    content_block = {"type": "text", "text": prompt_text}
-    if enable_cache:
-        content_block["cache_control"] = {"type": "ephemeral"}
-    return SystemMessage(content=[content_block])
+    blocks = [{"type": "text", "text": prompt_text, "cache_control": {"type": "ephemeral"}}]
+
+    if skills:
+        skills_text = build_skills_section(skills)
+        blocks.append({"type": "text", "text": skills_text, "cache_control": {"type": "ephemeral"}})
+
+    return SystemMessage(content=blocks)

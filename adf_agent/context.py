@@ -13,6 +13,8 @@ from typing import Optional
 
 from azure.identity import DefaultAzureCredential
 
+from .skill_loader import SkillLoader
+
 
 def _use_workspace() -> bool:
     """检查是否使用 workspace 目录（否则用 temp file）"""
@@ -63,6 +65,7 @@ class ADFAgentContext:
     _script_counter: int = field(default=0, repr=False)
     _temp_dir: Optional[Path] = field(default=None, repr=False)
     _cache: dict = field(default_factory=dict, repr=False)
+    skill_loader: Optional[SkillLoader] = field(default=None, repr=False)
 
     @property
     def credential(self) -> DefaultAzureCredential:
