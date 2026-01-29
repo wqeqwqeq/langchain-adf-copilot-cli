@@ -7,7 +7,7 @@ Azure Data Factory 客户端
 
 import time
 import requests
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Optional
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.datafactory import DataFactoryManagementClient
@@ -57,18 +57,17 @@ class ADFClient:
 
     # === Pipeline 操作 ===
 
-    def list_pipelines(self) -> List[Dict]:
+    def list_pipelines(self):
         """
         列出所有 Pipelines
 
         Returns:
-            Pipeline 字典列表
+            ItemPaged[PipelineResource]，调用方自行 .as_dict()
         """
-        pipelines = self.client.pipelines.list_by_factory(
+        return self.client.pipelines.list_by_factory(
             resource_group_name=self.resource_group,
             factory_name=self.factory_name,
         )
-        return [p.as_dict() for p in pipelines]
 
     def get_pipeline(self, name: str) -> Dict:
         """
@@ -129,39 +128,24 @@ class ADFClient:
 
     # === Linked Service 操作 ===
 
-    def list_linked_services(
-        self, filter_by_type: Union[str, List[str], None] = None
-    ) -> List[Dict]:
+    def list_linked_services(self) -> List[Dict[str, str]]:
         """
-        列出所有 Linked Services
-
-        Args:
-            filter_by_type: 按类型过滤（如 "Snowflake", "AzureBlobStorage"）
+        列出所有 Linked Services（轻量摘要）
 
         Returns:
-            Linked Service 字典列表
+            [{"name": "xxx", "type": "AzureBlobStorage"}, ...]
         """
-        linked_services = self.client.linked_services.list_by_factory(
+        result = []
+        for s in self.client.linked_services.list_by_factory(
             resource_group_name=self.resource_group,
             factory_name=self.factory_name,
-        )
-
-        services_list = []
-        for service in linked_services:
-            service_dict = service.as_dict()
-
-            if filter_by_type:
-                service_type = service_dict.get("properties", {}).get("type")
-                if isinstance(filter_by_type, str):
-                    if service_type == filter_by_type:
-                        services_list.append(service_dict)
-                elif isinstance(filter_by_type, list):
-                    if service_type in filter_by_type:
-                        services_list.append(service_dict)
-            else:
-                services_list.append(service_dict)
-
-        return services_list
+        ):
+            d = s.as_dict()
+            result.append({
+                "name": d.get("name", "unknown"),
+                "type": d.get("properties", {}).get("type", "unknown"),
+            })
+        return result
 
     def get_linked_service(self, name: str) -> Dict:
         """
@@ -225,18 +209,24 @@ class ADFClient:
 
     # === Integration Runtime 操作 ===
 
-    def list_integration_runtimes(self) -> List[Dict]:
+    def list_integration_runtimes(self) -> List[Dict[str, str]]:
         """
-        列出所有 Integration Runtimes
+        列出所有 Integration Runtimes（轻量摘要）
 
         Returns:
-            IR 字典列表
+            [{"name": "xxx", "type": "Managed"}, ...]
         """
-        irs = self.client.integration_runtimes.list_by_factory(
+        result = []
+        for ir in self.client.integration_runtimes.list_by_factory(
             resource_group_name=self.resource_group,
             factory_name=self.factory_name,
-        )
-        return [ir.as_dict() for ir in irs]
+        ):
+            d = ir.as_dict()
+            result.append({
+                "name": d.get("name", "unknown"),
+                "type": d.get("properties", {}).get("type", "unknown"),
+            })
+        return result
 
     def get_integration_runtime_status(self, name: str) -> Dict:
         """

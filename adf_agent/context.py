@@ -62,6 +62,7 @@ class ADFAgentContext:
     _session_id: Optional[str] = field(default=None, repr=False)
     _script_counter: int = field(default=0, repr=False)
     _temp_dir: Optional[Path] = field(default=None, repr=False)
+    _cache: dict = field(default_factory=dict, repr=False)
 
     @property
     def credential(self) -> DefaultAzureCredential:

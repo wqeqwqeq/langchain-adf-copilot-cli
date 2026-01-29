@@ -71,7 +71,7 @@ DO NOT guess or make up resource group or factory names."""
 
 ## Data Analysis Workflow
 
-ADF tools save data to the session directory (`workspace/sessions/{{timestamp}}/`) to avoid cluttering the context.
+ADF tools save data as individual JSON files per resource (e.g. `pipelines/{{name}}.json`). Check tool output for saved file paths.
 
 **When to use exec_python:**
 - Complex analysis across multiple files
@@ -79,15 +79,14 @@ ADF tools save data to the session directory (`workspace/sessions/{{timestamp}}/
 - NOT needed for simple list/get operations
 
 **Before writing exec_python code:**
-If you need to analyze JSON data, first use `read_file` to understand the JSON structure.
-In case there are multiple JSON file returned, pick one or two of them to read and understand the structure for exec_python. 
+Pick one or two individual files to read and understand the JSON structure first.
 This helps you write correct code and avoid KeyError.
 
 **Example workflow:**
 ```
-1. adf_linked_service_list()  # Get list, saves to linked_services.json
-2. read_file("linked_services.json")  # Understand JSON structure (if needed)
-3. exec_python(...)  # Now write correct code based on actual structure
+1. adf_linked_service_list()                        # Saves individual files
+2. read_file("linked_services/my_service.json")     # Understand JSON structure
+3. exec_python(...)                                 # Analyze with correct code
 ```
 
 ## exec_python Error Handling

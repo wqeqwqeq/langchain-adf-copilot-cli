@@ -7,7 +7,6 @@ ADF 工具定义
 
 import json
 import functools
-from typing import Optional
 
 from langchain.tools import tool, ToolRuntime
 
@@ -62,32 +61,43 @@ def adf_pipeline_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
     List all pipelines in the Azure Data Factory.
 
-    Returns pipeline names and saves full details to workspace/pipelines.json.
-    Use exec_python to analyze the saved JSON data.
+    Saves each pipeline as an individual file to pipelines/{name}.json.
+    Use read_file to explore individual pipeline definitions.
+    Results are cached for the session.
 
     Returns:
-        List of pipeline names, with full data saved to workspace/pipelines.json
+        List of pipeline names, with individual files saved to pipelines/
     """
     try:
-        client = _get_adf_client(runtime)
+        cache = runtime.context._cache
+        if "pipelines" in cache:
+            names, pipelines_dir = cache["pipelines"]
+        else:
+            client = _get_adf_client(runtime)
+            session_dir = runtime.context.session_dir
+            pipelines_dir = session_dir / "pipelines"
+            pipelines_dir.mkdir(parents=True, exist_ok=True)
 
-        # 获取所有 pipeline
-        pipelines_data = client.list_pipelines()
+            names = []
+            for p in client.list_pipelines():
+                data = p.as_dict()
+                name = data.get("name", "unknown")
+                (pipelines_dir / f"{name}.json").write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                names.append(name)
 
-        # 保存到 session_dir
-        session_dir = runtime.context.session_dir
-        output_file = session_dir / "pipelines.json"
-        output_file.write_text(json.dumps(pipelines_data, indent=2, ensure_ascii=False), encoding="utf-8")
+            cache["pipelines"] = (names, pipelines_dir)
 
-        # 返回摘要
-        names = [p.get("name", "unknown") for p in pipelines_data]
         return f"""[OK]
 
-Found {len(pipelines_data)} pipelines. Full data saved to {output_file}
+Found {len(names)} pipelines. Each saved to {pipelines_dir}/{{name}}.json
 
-Pipeline names:
 {chr(10).join(f"  - {name}" for name in names[:50])}
 {"  ... and more" if len(names) > 50 else ""}
+
+Use read_file("pipelines/<name>.json") to explore a specific pipeline and understand the json structure.
+Write code and use exec_python to complete complex analysis tasks if needed. 
 """
 
     except Exception as e:
@@ -98,47 +108,22 @@ Pipeline names:
 @require_adf_config
 def adf_pipeline_get(name: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
-    Get detailed definition of a specific pipeline.
+    Get full definition of a specific pipeline.
 
-    Saves the pipeline definition to workspace/pipelines/{name}.json.
-    Use this to get activities, parameters, and other pipeline details.
+    Returns the complete JSON definition directly.
+    Use this when the user explicitly asks about a specific pipeline.
+    For bulk exploration, use adf_pipeline_list + read_file instead.
 
     Args:
         name: Name of the pipeline to retrieve
 
     Returns:
-        Pipeline summary, with full definition saved to workspace/pipelines/{name}.json
+        Full pipeline definition as JSON
     """
     try:
         client = _get_adf_client(runtime)
-
-        # 获取 pipeline 定义
         pipeline_data = client.get_pipeline(name)
-
-        # 保存到 session_dir/pipelines/
-        session_dir = runtime.context.session_dir
-        pipelines_dir = session_dir / "pipelines"
-        pipelines_dir.mkdir(parents=True, exist_ok=True)
-        output_file = pipelines_dir / f"{name}.json"
-        output_file.write_text(json.dumps(pipeline_data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # 提取摘要信息
-        activities = pipeline_data.get("properties", {}).get("activities", [])
-        activity_names = [a.get("name", "unknown") for a in activities]
-        parameters = list(pipeline_data.get("properties", {}).get("parameters", {}).keys())
-
-        return f"""[OK]
-
-Pipeline: {name}
-Activities ({len(activities)}): {', '.join(activity_names[:10])}{"..." if len(activity_names) > 10 else ""}
-Parameters: {', '.join(parameters) if parameters else "(none)"}
-
-Full definition saved to {output_file}
-
-Use exec_python to analyze:
-  pipeline = load_json("pipelines/{name}.json")
-  activities = pipeline["properties"]["activities"]
-"""
+        return f"[OK]\n\n{json.dumps(pipeline_data, indent=2, ensure_ascii=False)}"
 
     except Exception as e:
         return f"[FAILED] {str(e)}"
@@ -148,44 +133,34 @@ Use exec_python to analyze:
 
 @tool
 @require_adf_config
-def adf_linked_service_list(filter_type: Optional[str] = None, runtime: ToolRuntime[ADFAgentContext] = None) -> str:
+def adf_linked_service_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
     List all linked services in the Azure Data Factory.
 
-    Optionally filter by service type (e.g., "Snowflake", "AzureBlobStorage").
-    Saves full details to workspace/linked_services.json.
-
-    Args:
-        filter_type: Optional type to filter by (e.g., "Snowflake", "AzureBlobStorage", "AzureSqlDatabase")
+    Returns a lightweight summary of all linked services (name + type).
+    Use adf_linked_service_get to retrieve full details of a specific service.
+    Results are cached for the session.
 
     Returns:
-        List of linked service names with types, full data saved to workspace/linked_services.json
+        List of linked service names with their types
     """
     try:
-        client = _get_adf_client(runtime)
+        cache = runtime.context._cache
+        if "linked_services" not in cache:
+            client = _get_adf_client(runtime)
+            cache["linked_services"] = client.list_linked_services()
 
-        # 获取所有 linked services
-        services = client.list_linked_services(filter_by_type=filter_type)
-
-        # 保存到 session_dir
-        session_dir = runtime.context.session_dir
-        output_file = session_dir / "linked_services.json"
-        output_file.write_text(json.dumps(services, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # 返回摘要
-        type_filter_msg = f" (filtered by type: {filter_type})" if filter_type else ""
-        summary_lines = []
-        for s in services[:50]:
-            name = s.get("name", "unknown")
-            svc_type = s.get("properties", {}).get("type", "unknown")
-            summary_lines.append(f"  - {name} ({svc_type})")
+        services = cache["linked_services"]
+        summary_lines = [f"  - {s['name']} ({s['type']})" for s in services]
 
         return f"""[OK]
 
-Found {len(services)} linked services{type_filter_msg}. Full data saved to {output_file}
+Found {len(services)} linked services.
 
-{chr(10).join(summary_lines)}
+{chr(10).join(summary_lines[:50])}
 {"  ... and more" if len(services) > 50 else ""}
+
+Use adf_linked_service_get(name) to get full details of a specific service.
 """
 
     except Exception as e:
@@ -196,60 +171,20 @@ Found {len(services)} linked services{type_filter_msg}. Full data saved to {outp
 @require_adf_config
 def adf_linked_service_get(name: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
-    Get detailed information about a specific linked service.
+    Get full definition of a specific linked service.
 
-    Saves the linked service definition to workspace/linked_service_{name}.json.
+    Returns the complete JSON definition directly.
 
     Args:
         name: Name of the linked service to retrieve
 
     Returns:
-        Linked service summary, with full definition saved to workspace/linked_service_{name}.json
+        Full linked service definition as JSON
     """
     try:
         client = _get_adf_client(runtime)
-
-        # 获取详情
         service = client.get_linked_service(name)
-
-        # 保存到 session_dir
-        session_dir = runtime.context.session_dir
-        output_file = session_dir / f"linked_service_{name}.json"
-        output_file.write_text(json.dumps(service, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # 提取摘要
-        props = service.get("properties", {})
-        svc_type = props.get("type", "unknown")
-        type_props = props.get("typeProperties", {})
-
-        # 根据类型提取关键信息
-        key_info = []
-        if svc_type == "Snowflake":
-            if "connectionString" in type_props:
-                key_info.append("Connection: connectionString configured")
-            if "accountIdentifier" in type_props:
-                key_info.append(f"Account: {type_props.get('accountIdentifier', 'N/A')}")
-        elif svc_type in ("AzureBlobStorage", "AzureBlobFS"):
-            if "serviceEndpoint" in type_props:
-                key_info.append(f"Endpoint: {type_props.get('serviceEndpoint', 'N/A')}")
-        elif svc_type == "AzureSqlDatabase":
-            if "connectionString" in type_props:
-                key_info.append("Connection: connectionString configured")
-
-        # 检查 connectVia (Integration Runtime)
-        connect_via = props.get("connectVia", {})
-        if connect_via:
-            ir_name = connect_via.get("referenceName", "unknown")
-            key_info.append(f"Integration Runtime: {ir_name}")
-
-        return f"""[OK]
-
-Linked Service: {name}
-Type: {svc_type}
-{chr(10).join(key_info) if key_info else "(no additional info extracted)"}
-
-Full definition saved to {output_file}
-"""
+        return f"[OK]\n\n{json.dumps(service, indent=2, ensure_ascii=False)}"
 
     except Exception as e:
         return f"[FAILED] {str(e)}"
@@ -317,38 +252,29 @@ def adf_integration_runtime_list(runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
     List all Integration Runtimes in the Azure Data Factory.
 
-    Saves full details to workspace/integration_runtimes.json.
+    Returns a lightweight summary of all IRs (name + type).
+    Use adf_integration_runtime_get to retrieve full status of a specific IR.
+    Results are cached for the session.
 
     Returns:
-        List of IR names with types, full data saved to workspace/integration_runtimes.json
+        List of IR names with types
     """
     try:
-        client = _get_adf_client(runtime)
+        cache = runtime.context._cache
+        if "integration_runtimes" not in cache:
+            client = _get_adf_client(runtime)
+            cache["integration_runtimes"] = client.list_integration_runtimes()
 
-        # 获取所有 Integration Runtimes
-        irs_data = client.list_integration_runtimes()
-
-        # 保存到 session_dir
-        session_dir = runtime.context.session_dir
-        output_file = session_dir / "integration_runtimes.json"
-        output_file.write_text(json.dumps(irs_data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # 返回摘要
-        summary_lines = []
-        for ir in irs_data:
-            name = ir.get("name", "unknown")
-            ir_type = ir.get("properties", {}).get("type", "unknown")
-            summary_lines.append(f"  - {name} ({ir_type})")
+        irs = cache["integration_runtimes"]
+        summary_lines = [f"  - {ir['name']} ({ir['type']})" for ir in irs]
 
         return f"""[OK]
 
-Found {len(irs_data)} Integration Runtimes. Full data saved to {output_file}
+Found {len(irs)} Integration Runtimes.
 
 {chr(10).join(summary_lines)}
 
-Types:
-- Managed: Azure-hosted, supports interactive authoring
-- SelfHosted: On-premises or VM-hosted
+Use adf_integration_runtime_get(name) to get full status of a specific IR.
 """
 
     except Exception as e:
@@ -359,49 +285,20 @@ Types:
 @require_adf_config
 def adf_integration_runtime_get(name: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
-    Get detailed status of a specific Integration Runtime.
+    Get full status of a specific Integration Runtime.
 
-    Includes interactive authoring status for Managed IRs.
-    Saves full status to workspace/ir_{name}_status.json.
+    Returns the complete JSON status directly.
 
     Args:
         name: Name of the Integration Runtime
 
     Returns:
-        IR status summary, with full data saved to workspace/ir_{name}_status.json
+        Full IR status as JSON
     """
     try:
         client = _get_adf_client(runtime)
-
-        # 获取状态
         status = client.get_integration_runtime_status(name)
-
-        # 保存到 session_dir
-        session_dir = runtime.context.session_dir
-        output_file = session_dir / f"ir_{name}_status.json"
-        output_file.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        # 提取关键信息
-        props = status.get("properties", {})
-        ir_type = props.get("type", "unknown")
-        type_props = props.get("typeProperties", {})
-
-        # 检查 interactive authoring 状态（仅 Managed）
-        interactive_status = "N/A"
-        if ir_type == "Managed":
-            interactive_query = type_props.get("interactiveQuery", {})
-            interactive_status = interactive_query.get("status", "Disabled")
-
-        return f"""[OK]
-
-Integration Runtime: {name}
-Type: {ir_type}
-Interactive Authoring: {interactive_status}
-
-Full status saved to {output_file}
-
-{"Note: Interactive authoring is required for connection testing. Use adf_integration_runtime_enable to enable it." if interactive_status == "Disabled" else ""}
-"""
+        return f"[OK]\n\n{json.dumps(status, indent=2, ensure_ascii=False)}"
 
     except Exception as e:
         return f"[FAILED] {str(e)}"
