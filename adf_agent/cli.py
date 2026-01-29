@@ -147,13 +147,23 @@ class StreamState:
                 "input_tokens": event.get("input_tokens", 0),
                 "output_tokens": event.get("output_tokens", 0),
                 "total_tokens": event.get("total_tokens", 0),
+                "cache_creation_input_tokens": event.get("cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": event.get("cache_read_input_tokens", 0),
             }
-            # Per-turn token usage comes right after tool_result
-            # Store it aligned with tool_results
-            if len(self.tool_results) > len(self.turn_token_usages):
-                self.turn_token_usages.append(usage)
-            # Always update total (last token_usage event is the total)
-            self.token_usage = usage
+            is_total = event.get("is_total", False)
+            parallel_count = event.get("parallel_count", 1)
+            if is_total:
+                # 汇总（所有 API 调用的 SUM）
+                self.token_usage = usage
+            else:
+                # Per-turn: parallel tools 的 token 显示在最后一个 tool 上
+                if parallel_count > 1:
+                    usage["parallel_count"] = parallel_count
+                    # 为前面的 parallel tools 填充 None
+                    while len(self.turn_token_usages) < len(self.tool_results) - 1:
+                        self.turn_token_usages.append(None)
+                if len(self.tool_results) > len(self.turn_token_usages):
+                    self.turn_token_usages.append(usage)
 
         elif event_type == "error":
             self.is_processing = False
@@ -186,6 +196,8 @@ def display_token_usage(token_usage: dict) -> None:
     input_tokens = token_usage.get("input_tokens", 0)
     output_tokens = token_usage.get("output_tokens", 0)
     total_tokens = token_usage.get("total_tokens", 0)
+    cache_read = token_usage.get("cache_read_input_tokens", 0)
+    cache_creation = token_usage.get("cache_creation_input_tokens", 0)
 
     if total_tokens == 0:
         return
@@ -196,7 +208,20 @@ def display_token_usage(token_usage: dict) -> None:
 
     # 分隔线和 token 信息
     console.print("─" * 40, style="dim")
-    console.print(f"[dim]Tokens: {fmt(input_tokens)} input / {fmt(output_tokens)} output | Total: {fmt(total_tokens)}[/dim]")
+
+    # Build display string
+    base = f"Tokens: {fmt(input_tokens)} input / {fmt(output_tokens)} output | Total: {fmt(total_tokens)}"
+
+    # Add cache info if present
+    if cache_read > 0 or cache_creation > 0:
+        cache_parts = []
+        if cache_read > 0:
+            cache_parts.append(f"{fmt(cache_read)} read")
+        if cache_creation > 0:
+            cache_parts.append(f"{fmt(cache_creation)} write")
+        base += f" | Cache: {', '.join(cache_parts)}"
+
+    console.print(f"[dim]{base}[/dim]")
 
 
 def format_turn_token_usage(token_usage: dict | None) -> Text | None:
@@ -206,6 +231,9 @@ def format_turn_token_usage(token_usage: dict | None) -> Text | None:
 
     input_tokens = token_usage.get("input_tokens", 0)
     output_tokens = token_usage.get("output_tokens", 0)
+    cache_read = token_usage.get("cache_read_input_tokens", 0)
+    cache_creation = token_usage.get("cache_creation_input_tokens", 0)
+    parallel_count = token_usage.get("parallel_count", 1)
 
     if input_tokens == 0 and output_tokens == 0:
         return None
@@ -214,7 +242,23 @@ def format_turn_token_usage(token_usage: dict | None) -> Text | None:
     def fmt(n: int) -> str:
         return f"{n:,}"
 
-    return Text(f"  ↳ {fmt(input_tokens)} in / {fmt(output_tokens)} out", style="dim")
+    # Build display string
+    base = f"  ↳ {fmt(input_tokens)} in / {fmt(output_tokens)} out"
+
+    # Parallel indicator
+    if parallel_count > 1:
+        base += f" (parallel, {parallel_count} tools)"
+
+    # Add cache info if present
+    if cache_read > 0 or cache_creation > 0:
+        cache_parts = []
+        if cache_read > 0:
+            cache_parts.append(f"{fmt(cache_read)} read")
+        if cache_creation > 0:
+            cache_parts.append(f"{fmt(cache_creation)} write")
+        base += f" (cache: {', '.join(cache_parts)})"
+
+    return Text(base, style="dim")
 
 
 def format_tool_result_compact(

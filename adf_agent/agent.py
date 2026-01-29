@@ -308,6 +308,34 @@ class ADFAgent:
         full_response = ""
         debug = os.getenv("ADF_DEBUG", "").lower() in ("1", "true", "yes")
 
+        # Parallel tool call 检测：
+        # 一次 API 调用可能返回多个 tool_call（并行执行），
+        # 但 usage_metadata 只出现一次。我们把 token_usage 延迟到
+        # 该批次的最后一个 tool_result 之后再发送。
+        from .stream.token_tracker import TokenUsageInfo
+        pending_turn_usage: TokenUsageInfo | None = None
+        parallel_count = 0
+
+        def _emit_pending():
+            """发送缓冲的 per-turn token_usage（上一批次的）"""
+            nonlocal pending_turn_usage, parallel_count
+            if pending_turn_usage is not None and not pending_turn_usage.is_empty():
+                ev = emitter.token_usage(
+                    input_tokens=pending_turn_usage.input_tokens,
+                    output_tokens=pending_turn_usage.output_tokens,
+                    total_tokens=pending_turn_usage.total_tokens,
+                    cache_creation_input_tokens=pending_turn_usage.cache_creation_input_tokens,
+                    cache_read_input_tokens=pending_turn_usage.cache_read_input_tokens,
+                    is_total=False,
+                    parallel_count=parallel_count,
+                ).data
+                pending_turn_usage = None
+                parallel_count = 0
+                return ev
+            pending_turn_usage = None
+            parallel_count = 0
+            return None
+
         # 使用 messages 模式获取 token 级流式
         try:
             for event in self.agent.stream(
@@ -328,6 +356,11 @@ class ADFAgent:
 
                 # 处理 AIMessageChunk / AIMessage
                 if isinstance(chunk, (AIMessageChunk, AIMessage)):
+                    # 新的 API 调用开始 → 发送上一批次缓冲的 token_usage
+                    pending_ev = _emit_pending()
+                    if pending_ev:
+                        yield pending_ev
+
                     # 更新 token 统计
                     token_tracker.update(chunk)
 
@@ -348,7 +381,6 @@ class ADFAgent:
 
                 # 处理 ToolMessage (工具执行结果)
                 elif hasattr(chunk, "type") and chunk.type == "tool":
-                    # 先获取当前 turn 的 token 使用量（在累加到总计之前）
                     turn_usage = token_tracker.finalize_turn()
 
                     if debug:
@@ -361,13 +393,14 @@ class ADFAgent:
                             print(f"[DEBUG] Yielding: {ev.type}")
                         yield ev.data
 
-                    # 发送该 turn 的 token 使用量（在 tool_result 之后）
+                    # 缓冲 token_usage，等批次结束再发送
                     if turn_usage and not turn_usage.is_empty():
-                        yield emitter.token_usage(
-                            input_tokens=turn_usage.input_tokens,
-                            output_tokens=turn_usage.output_tokens,
-                            total_tokens=turn_usage.total_tokens,
-                        ).data
+                        # 该批次第一个 tool（有 usage 数据）
+                        pending_turn_usage = turn_usage
+                        parallel_count = 1
+                    elif pending_turn_usage is not None:
+                        # 同一批次的后续 parallel tool（finalize 返回 None）
+                        parallel_count += 1
 
             if debug:
                 print("[DEBUG] Stream completed normally")
@@ -381,13 +414,34 @@ class ADFAgent:
             yield emitter.error(str(e)).data
             raise
 
-        # 发送 token 使用量事件（在 done 之前）
+        # 发送上一批次缓冲的 per-turn token_usage
+        pending_ev = _emit_pending()
+        if pending_ev:
+            yield pending_ev
+
+        # 最后一个 turn（最终回复，没有 tool_result 触发 finalize）
+        last_turn = token_tracker.finalize_turn()
+        if last_turn and not last_turn.is_empty():
+            yield emitter.token_usage(
+                input_tokens=last_turn.input_tokens,
+                output_tokens=last_turn.output_tokens,
+                total_tokens=last_turn.total_tokens,
+                cache_creation_input_tokens=last_turn.cache_creation_input_tokens,
+                cache_read_input_tokens=last_turn.cache_read_input_tokens,
+                is_total=False,
+                parallel_count=1,
+            ).data
+
+        # 发送汇总 token 使用量（所有 turn 的 SUM）
         usage = token_tracker.get_usage()
         if not usage.is_empty():
             yield emitter.token_usage(
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 total_tokens=usage.total_tokens,
+                cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                cache_read_input_tokens=usage.cache_read_input_tokens,
+                is_total=True,
             ).data
 
         # 发送完成事件

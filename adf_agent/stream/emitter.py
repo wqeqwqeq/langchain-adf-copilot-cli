@@ -58,11 +58,24 @@ class StreamEventEmitter:
         input_tokens: int,
         output_tokens: int,
         total_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
+        is_total: bool = False,
+        parallel_count: int = 1,
     ) -> StreamEvent:
-        """Token 使用量事件"""
+        """Token 使用量事件
+
+        Args:
+            is_total: True 表示这是所有 turn 的汇总，False 表示单次 API 调用的用量
+            parallel_count: 该 API 调用中并行执行的 tool 数量（>1 表示 parallel tool use）
+        """
         return StreamEvent("token_usage", {
             "type": "token_usage",
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens or (input_tokens + output_tokens),
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "cache_read_input_tokens": cache_read_input_tokens,
+            "is_total": is_total,
+            "parallel_count": parallel_count,
         })
