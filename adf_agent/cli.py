@@ -54,15 +54,79 @@ formatter = ToolResultFormatter()
 
 # === 终端高度计算 ===
 
-def get_display_heights(con: Console) -> dict:
-    """根据终端高度计算各区域的显示行数限制"""
-    terminal_height = con.height or 25
-    available = terminal_height - 5  # 预留空间
+
+def compute_height_budget(
+    terminal_height: int,
+    has_thinking: bool,
+    has_response: bool,
+    has_response_placeholder: bool,
+    num_tools: int,
+    num_results: int,
+    show_processing: bool,
+) -> dict:
+    """根据终端高度和当前活动区域，动态分配各区域的内容行数。
+
+    确保所有区域（含边框、工具名称行等固定开销）的总高度 <= terminal_height。
+    分配优先级：response > tools > thinking。
+
+    Returns:
+        {"thinking": int, "response": int, "lines_per_tool": int}
+    """
+    num_pending = max(0, num_tools - num_results)
+
+    # 固定开销（边框、工具名称行、spinner 等不可压缩的行）
+    fixed = 2  # 顶部/底部边距
+    if has_thinking:
+        fixed += 2  # Panel 上下边框
+    if has_response:
+        fixed += 2  # Panel 上下边框
+    if has_response_placeholder:
+        fixed += 1
+    if show_processing:
+        fixed += 1
+    fixed += num_tools    # 每个 tool 的名称行
+    fixed += num_pending  # 未完成 tool 的 spinner 行
+
+    # 可分配的内容行数（thinking 内容 + tool 结果 + response 内容）
+    content_budget = max(6, terminal_height - fixed)
+
+    # 按优先级分配：response > tools > thinking
+    thinking_h = 0
+    tool_result_budget = 0
+    response_h = 0
+
+    if has_response:
+        if has_thinking and num_results > 0:
+            response_h = max(3, content_budget // 2)
+            rest = content_budget - response_h
+            thinking_h = max(2, rest // 3)
+            tool_result_budget = rest - thinking_h
+        elif has_thinking:
+            response_h = max(3, content_budget * 2 // 3)
+            thinking_h = max(2, content_budget - response_h)
+        elif num_results > 0:
+            response_h = max(3, content_budget * 3 // 5)
+            tool_result_budget = content_budget - response_h
+        else:
+            response_h = content_budget
+    elif has_thinking and num_results > 0:
+        thinking_h = max(3, content_budget * 2 // 5)
+        tool_result_budget = content_budget - thinking_h
+    elif has_thinking:
+        thinking_h = content_budget
+    elif num_results > 0:
+        tool_result_budget = content_budget
+
+    # 每个 tool 结果的显示行数（-1 预留 token usage 行）
+    if num_results > 0 and tool_result_budget > 0:
+        lines_per_tool = max(1, tool_result_budget // num_results - 1)
+    else:
+        lines_per_tool = 2
 
     return {
-        "thinking": max(3, available // 5),
-        "tools": max(5, available * 3 // 10),
-        "response": max(5, available // 2),
+        "thinking": thinking_h,
+        "response": response_h,
+        "lines_per_tool": lines_per_tool,
     }
 
 
@@ -190,7 +254,16 @@ class StreamState:
 
 
 def display_token_usage(token_usage: dict) -> None:
-    """显示 token 使用量"""
+    """显示汇总 token 使用量
+
+    LangChain 的 input_tokens 已包含 cache tokens：
+        input_tokens = new_input + cache_creation + cache_read
+
+    显示格式按 cache 状态分三种：
+    - 混合:   "8,537 new + 3,269 cache init + 13,076 cached = 24,882 in / 727 out"
+    - 全命中: "8,525 + 16,345 cached = 24,870 in / 692 out"
+    - 无缓存: "5,000 in / 200 out"
+    """
     if not token_usage:
         return
 
@@ -210,23 +283,41 @@ def display_token_usage(token_usage: dict) -> None:
     # 分隔线和 token 信息
     console.print("─" * 40, style="dim")
 
-    # Build display string
-    base = f"Tokens: {fmt(input_tokens)} input / {fmt(output_tokens)} output | Total: {fmt(total_tokens)}"
-
-    # Add cache info if present
-    if cache_read > 0 or cache_creation > 0:
-        cache_parts = []
-        if cache_read > 0:
-            cache_parts.append(f"{fmt(cache_read)} read")
-        if cache_creation > 0:
-            cache_parts.append(f"{fmt(cache_creation)} write")
-        base += f" | Cache: {', '.join(cache_parts)}"
+    cached_total = cache_read + cache_creation
+    if cached_total > 0:
+        new_input = input_tokens - cached_total
+        if cache_read > 0 and cache_creation > 0:
+            # 混合：分项列出
+            base = (
+                f"Tokens: {fmt(new_input)} new"
+                f" + {fmt(cache_creation)} cache init"
+                f" + {fmt(cache_read)} cached"
+                f" = {fmt(input_tokens)} in / {fmt(output_tokens)} out"
+            )
+        elif cache_creation > 0:
+            base = (
+                f"Tokens: {fmt(new_input)} + {fmt(cached_total)} cache init"
+                f" = {fmt(input_tokens)} in / {fmt(output_tokens)} out"
+            )
+        else:
+            base = (
+                f"Tokens: {fmt(new_input)} + {fmt(cached_total)} cached"
+                f" = {fmt(input_tokens)} in / {fmt(output_tokens)} out"
+            )
+    else:
+        base = f"Tokens: {fmt(input_tokens)} in / {fmt(output_tokens)} out"
 
     console.print(f"[dim]{base}[/dim]")
 
 
 def format_turn_token_usage(token_usage: dict | None) -> Text | None:
-    """格式化单个 turn 的 token 使用量（内联显示）"""
+    """格式化单个 turn 的 token 使用量（内联显示）
+
+    input_tokens 已包含 cache tokens，显示 new + cached 分解：
+    - cache init: "356 + 3,269 cache init / 162 out"  （首次缓存）
+    - cached:     "1,431 + 3,269 cached / 63 out"     （缓存命中）
+    - 无缓存:     "3,625 in / 155 out"
+    """
     if not token_usage:
         return None
 
@@ -243,21 +334,22 @@ def format_turn_token_usage(token_usage: dict | None) -> Text | None:
     def fmt(n: int) -> str:
         return f"{n:,}"
 
-    # Build display string
-    base = f"  ↳ {fmt(input_tokens)} in / {fmt(output_tokens)} out"
+    # Build input part: show new + cached breakdown
+    cached_total = cache_read + cache_creation
+    if cached_total > 0:
+        new_input = input_tokens - cached_total
+        if cache_creation > 0:
+            input_part = f"{fmt(new_input)} + {fmt(cached_total)} cache init"
+        else:
+            input_part = f"{fmt(new_input)} + {fmt(cached_total)} cached"
+    else:
+        input_part = f"{fmt(input_tokens)} in"
+
+    base = f"  ↳ {input_part} / {fmt(output_tokens)} out"
 
     # Parallel indicator
     if parallel_count > 1:
-        base += f" (parallel, {parallel_count} tools)"
-
-    # Add cache info if present
-    if cache_read > 0 or cache_creation > 0:
-        cache_parts = []
-        if cache_read > 0:
-            cache_parts.append(f"{fmt(cache_read)} read")
-        if cache_creation > 0:
-            cache_parts.append(f"{fmt(cache_creation)} write")
-        base += f" (cache: {', '.join(cache_parts)})"
+        base += f" ({parallel_count} tools)"
 
     return Text(base, style="dim")
 
@@ -381,16 +473,13 @@ def create_streaming_display(
     is_responding: bool = False,
     is_waiting: bool = False,
     is_processing: bool = False,
-    max_heights: dict = None,
+    terminal_height: int = 25,
 ) -> Group:
-    """创建流式显示的布局"""
+    """创建流式显示的布局，确保总高度不超过终端高度"""
     elements = []
     tool_calls = tool_calls or []
     tool_results = tool_results or []
     turn_token_usages = turn_token_usages or []
-
-    if max_heights is None:
-        max_heights = {"thinking": 10, "tools": 10, "response": 15}
 
     # 初始等待状态
     if is_waiting and not thinking_text and not response_text and not tool_calls:
@@ -398,30 +487,49 @@ def create_streaming_display(
         elements.append(spinner)
         return Group(*elements)
 
+    # === 动态高度预算 ===
+    has_thinking = bool(thinking_text)
+    has_response = bool(response_text)
+    has_response_placeholder = is_responding and not thinking_text and not has_response
+    show_processing = (
+        is_processing and not is_thinking and not is_responding and not has_response
+    )
+
+    heights = compute_height_budget(
+        terminal_height=terminal_height,
+        has_thinking=has_thinking,
+        has_response=has_response,
+        has_response_placeholder=has_response_placeholder,
+        num_tools=len(tool_calls),
+        num_results=len(tool_results),
+        show_processing=show_processing,
+    )
+    thinking_h = heights["thinking"]
+    response_h = heights["response"]
+    lines_per_tool = heights["lines_per_tool"]
+
+    # === 构建各区域 ===
+
     # Thinking 面板
     if thinking_text:
         thinking_title = "Thinking"
         if is_thinking:
             thinking_title += " ..."
-        display_thinking = truncate_to_lines(thinking_text, max_heights["thinking"])
-        thinking_height = min(len(display_thinking.split('\n')), max_heights["thinking"]) + 2
+        display_thinking = truncate_to_lines(thinking_text, thinking_h)
+        panel_h = min(len(display_thinking.split('\n')), thinking_h) + 2
         elements.append(Panel(
             Text(display_thinking, style="dim"),
             title=thinking_title,
             border_style="blue",
             padding=(0, 1),
-            height=thinking_height,
+            height=panel_h,
         ))
 
     # Tool Calls 显示
     if tool_calls:
-        tools_max_lines = max_heights["tools"]
-        lines_per_tool = max(2, tools_max_lines // max(1, len(tool_calls)))
-
         for i, tc in enumerate(tool_calls):
             has_result = i < len(tool_results)
             tr = tool_results[i] if has_result else None
-            # 获取该 turn 的 token 使用量
             turn_tokens = turn_token_usages[i] if i < len(turn_token_usages) else None
 
             if has_result:
@@ -455,7 +563,7 @@ def create_streaming_display(
                 elements.append(spinner)
 
     # 工具执行后等待
-    if is_processing and not is_thinking and not is_responding and not response_text:
+    if show_processing:
         spinner = Spinner("dots", text=" AI 正在分析结果...", style="cyan")
         elements.append(spinner)
 
@@ -464,16 +572,16 @@ def create_streaming_display(
         response_title = "Response"
         if is_responding:
             response_title += " ..."
-        display_response = truncate_to_lines(response_text, max_heights["response"])
-        response_height = min(len(display_response.split('\n')), max_heights["response"]) + 2
+        display_response = truncate_to_lines(response_text, response_h)
+        panel_h = min(len(display_response.split('\n')), response_h) + 2
         elements.append(Panel(
             Markdown(display_response),
             title=response_title,
             border_style="green",
             padding=(0, 1),
-            height=response_height,
+            height=panel_h,
         ))
-    elif is_responding and not thinking_text:
+    elif has_response_placeholder:
         elements.append(Text("⏳ Generating response...", style="dim"))
 
     return Group(*elements) if elements else Text("⏳ Processing...", style="dim")
@@ -745,10 +853,9 @@ def cmd_run(prompt: str, enable_thinking: bool = True):
 
             for event in agent.stream_events(prompt):
                 event_type = state.handle_event(event)
-                heights = get_display_heights(console)
                 live.update(create_streaming_display(
                     **state.get_display_args(),
-                    max_heights=heights,
+                    terminal_height=console.height or 25,
                 ))
 
                 if event_type in ("tool_call", "tool_result"):
@@ -822,10 +929,9 @@ def cmd_interactive(enable_thinking: bool = True):
 
                 for event in agent.stream_events(user_input, thread_id=thread_id):
                     event_type = state.handle_event(event)
-                    heights = get_display_heights(console)
                     live.update(create_streaming_display(
                         **state.get_display_args(),
-                        max_heights=heights,
+                        terminal_height=console.height or 25,
                     ))
 
                     if event_type in ("tool_call", "tool_result"):

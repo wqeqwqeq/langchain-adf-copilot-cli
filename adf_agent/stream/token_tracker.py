@@ -5,8 +5,13 @@ TokenTracker - Token 使用量追踪
 并在多次 LLM 调用（如工具使用场景）中累积统计。
 
 API 返回的 usage_metadata 是每次 API 调用的独立值（非跨 turn 累积）：
-- input_tokens: 该次调用的输入 token（因 context 增长，每次自然递增）
+- input_tokens: 该次调用的总输入 token（已包含 cache tokens）
 - output_tokens: 该次调用的输出 token（独立值）
+- input_token_details.cache_creation: 首次写入缓存的 token 数（cache init）
+- input_token_details.cache_read: 从缓存命中的 token 数（cached）
+
+LangChain 的 input_tokens = raw_input + cache_creation + cache_read，
+即 cache tokens 是 input_tokens 的子集，不是额外的。
 """
 
 from dataclasses import dataclass, field
@@ -58,18 +63,39 @@ class TokenTracker:
         """
         从 chunk 提取 token 统计
 
-        API 每次调用返回独立的 usage，直接使用 raw 值。
-        流式输出中 usage 通常只出现在最后一个 chunk，
-        所以同一 turn 内直接替换（后到的更完整）。
+        使用 merge 策略：取各字段的 max 值，确保 usage 分散在多个
+        chunk 时（如 input 和 cache 在前、output 在后），不会丢失数据。
+
+        LangChain input_tokens 已包含 cache tokens：
+        input_tokens = raw_input + cache_read + cache_creation
         """
         usage = getattr(chunk, "usage_metadata", None)
         if not usage:
             return
 
+        input_tokens, output_tokens, cache_creation, cache_read = \
+            self._extract_usage(usage)
+
+        if input_tokens > 0 or output_tokens > 0:
+            # Merge: 取 max 保留各 chunk 的非零值
+            cur = self._current_turn
+            merged_input = max(cur.input_tokens, input_tokens)
+            merged_output = max(cur.output_tokens, output_tokens)
+            self._current_turn = TokenUsageInfo(
+                input_tokens=merged_input,
+                output_tokens=merged_output,
+                total_tokens=merged_input + merged_output,
+                cache_creation_input_tokens=max(cur.cache_creation_input_tokens, cache_creation),
+                cache_read_input_tokens=max(cur.cache_read_input_tokens, cache_read),
+            )
+            self._has_current_usage = True
+
+    @staticmethod
+    def _extract_usage(usage) -> tuple[int, int, int, int]:
+        """从 usage_metadata 提取 (input, output, cache_creation, cache_read)"""
         if isinstance(usage, dict):
             input_tokens = usage.get("input_tokens", 0) or 0
             output_tokens = usage.get("output_tokens", 0) or 0
-            # LangChain 把 cache 信息放在 input_token_details 里
             details = usage.get("input_token_details", {}) or {}
             cache_creation = details.get("cache_creation", 0) or 0
             cache_read = details.get("cache_read", 0) or 0
@@ -83,16 +109,7 @@ class TokenTracker:
             else:
                 cache_creation = getattr(details, "cache_creation", 0) or 0 if details else 0
                 cache_read = getattr(details, "cache_read", 0) or 0 if details else 0
-
-        if input_tokens > 0 or output_tokens > 0:
-            self._current_turn = TokenUsageInfo(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=input_tokens + output_tokens,
-                cache_creation_input_tokens=cache_creation,
-                cache_read_input_tokens=cache_read,
-            )
-            self._has_current_usage = True
+        return input_tokens, output_tokens, cache_creation, cache_read
 
     def finalize_turn(self) -> TokenUsageInfo | None:
         """
