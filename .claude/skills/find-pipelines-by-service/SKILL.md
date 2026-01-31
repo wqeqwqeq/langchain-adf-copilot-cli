@@ -117,9 +117,9 @@ print(f"\n=== Results: {len(results)} pipelines matched ===")
 print(json.dumps(results, indent=2))
 ```
 
-**Important**: The field names above (e.g. `linked_service_name`, `reference_name`, `type_properties`) are based on the Azure SDK `as_dict()` output. If `exec_python` fails with `KeyError`, read 1-2 pipeline files and `datasets.json` to check the actual JSON keys and adjust accordingly.
+**Important**: The field names above (e.g. `linked_service_name`, `reference_name`, `type_properties`) are based on the Azure SDK `as_dict()` output. If `exec_python` fails with `KeyError`, read 1-2 pipeline files and `datasets.json` to check the actual JSON keys and adjust accordingly. If `exec_python` returns no elements or not find any match, read 1-2 pipeline and `datasets.json` directly as well
 
-### Step 5: If exec_python Fails — Debug
+### Step 5: If exec_python Fails or return nothing — Debug
 
 - If error relates to pipeline structure: `read_file("pipelines/<some_pipeline>.json")` to understand actual JSON keys
 - If error relates to dataset structure: `read_file("datasets.json")` to check format
