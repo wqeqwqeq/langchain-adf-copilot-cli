@@ -349,6 +349,55 @@ Common fixes:
         return error_msg
 
 
+@tool
+def resolve_adf_target(domain: str, environment: str,
+                       runtime: ToolRuntime[ADFAgentContext]) -> str:
+    """
+    Switch the active ADF target to a specific domain and environment.
+
+    Call this BEFORE any ADF operation when:
+    - The user first specifies which ADF instance to work with
+    - The user wants to switch to a different ADF target
+
+    Both parameters are required. If the user does not provide both,
+    ask for clarification instead of calling this tool.
+
+    Args:
+        domain: Domain name (e.g. "sales", "hr", "personal")
+        environment: Environment name (e.g. "dev", "qa", "prod")
+    """
+    from ..gatekeeper import ADF_TARGETS
+
+    domain_targets = ADF_TARGETS.get(domain)
+    if domain_targets is None:
+        available = "\n".join(
+            f"  - {d}: {', '.join(envs.keys())}"
+            for d, envs in ADF_TARGETS.items()
+        )
+        return (
+            f"[FAILED] Unknown domain: {domain}\n\n"
+            f"Available targets (domain → environments):\n{available}"
+        )
+
+    config = domain_targets.get(environment)
+    if config is None:
+        return (
+            f"[FAILED] Unknown environment '{environment}' for domain '{domain}'. "
+            f"Available: {', '.join(domain_targets.keys())}"
+        )
+
+    adf = runtime.context.adf_config
+    old_label = f"{adf.factory_name}" if adf.is_configured() else None
+    adf.resource_group = config.resource_group
+    adf.factory_name = config.factory_name
+    adf.subscription_id = config.subscription_id
+
+    new_label = f"{domain}/{environment} ({config.factory_name})"
+    if old_label:
+        return f"[OK] Switched ADF target: {old_label} → {new_label}"
+    return f"[OK] ADF target set: {new_label}"
+
+
 # 导出所有通用工具
 GENERAL_TOOLS = [
     read_file,
@@ -357,4 +406,5 @@ GENERAL_TOOLS = [
     grep,
     list_dir,
     exec_python,
+    resolve_adf_target,
 ]

@@ -23,19 +23,10 @@ def require_adf_config(func):
         config = runtime.context.adf_config
 
         if not config.is_configured():
-            missing = config.missing_fields()
-            return f"""[FAILED] ADF configuration incomplete.
-
-Missing required fields: {', '.join(missing)}
-
-Please ask the user to provide:
-- resource_group: The Azure resource group name containing the ADF
-- factory_name: The Azure Data Factory name
-
-The user needs to set environment variables and restart:
-  export ADF_RESOURCE_GROUP=<resource-group-name>
-  export ADF_FACTORY_NAME=<factory-name>
-"""
+            return (
+                "[FAILED] No ADF target set. "
+                "Call resolve_adf_target(domain, environment) first."
+            )
         return func(*args, **kwargs)
     return wrapper
 

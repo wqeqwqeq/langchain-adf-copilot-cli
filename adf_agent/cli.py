@@ -27,8 +27,8 @@ from rich.live import Live
 from rich.text import Text
 from rich.spinner import Spinner
 
-from .agent import ADFAgent, load_adf_config
-from .context import _use_workspace, ADFAgentContext
+from .agent import ADFAgent
+from .context import _use_workspace, ADFConfig
 from .stream import (
     ToolResultFormatter,
     has_args,
@@ -819,14 +819,13 @@ def show_config_status(agent: ADFAgent = None):
     Args:
         agent: 可选，如果提供则显示实际的 session_dir
     """
-    config = load_adf_config()
+    if agent:
+        config = agent.adf_config
+    else:
+        config = ADFConfig()
 
     if config.is_configured():
         console.print(f"[green]✓[/green] ADF: {config.factory_name} (RG: {config.resource_group})")
-    else:
-        missing = config.missing_fields()
-        console.print(f"[yellow]![/yellow] ADF config incomplete - missing: {', '.join(missing)}")
-        console.print("[dim]  Agent will ask when ADF operations are needed[/dim]")
 
     # 显示存储位置（仅当使用 temp 目录时）
     if not _use_workspace():

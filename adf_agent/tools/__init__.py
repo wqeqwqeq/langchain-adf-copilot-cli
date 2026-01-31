@@ -11,6 +11,7 @@ from .general_tools import (
     grep,
     list_dir,
     exec_python,
+    resolve_adf_target,
     GENERAL_TOOLS,
 )
 
@@ -38,6 +39,7 @@ ALL_TOOLS = [
     # Skill tools
     load_skill,
     # General tools
+    resolve_adf_target,
     read_file,
     # write_file,
     glob,
@@ -60,6 +62,7 @@ __all__ = [
     "load_skill",
     "SKILL_TOOLS",
     # General tools
+    "resolve_adf_target",
     "read_file",
     # "write_file",
     "glob",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from langchain_core.messages import SystemMessage
 
-from .context import ADFConfig
+from .gatekeeper import ADF_TARGETS
 from .skill_loader import SkillMetadata
 
 
@@ -37,49 +37,41 @@ def build_skills_section(skills: list[SkillMetadata]) -> str:
 
 
 def build_system_prompt(
-    adf_config: ADFConfig,
     skills: list[SkillMetadata] | None = None,
 ) -> SystemMessage:
     """
     构建系统提示
 
     Args:
-        adf_config: ADF 配置（用于显示当前配置状态）
         skills: Skills 元数据列表（可选，用于注入 skills 目录）
     """
-    # 配置状态信息
-    if adf_config.is_configured():
-        config_status = f"""## Current ADF Configuration
-
-- Resource Group: `{adf_config.resource_group}`
-- Factory Name: `{adf_config.factory_name}`
-- Subscription ID: `{adf_config.subscription_id or "(auto-detect)"}`
-
-Configuration is complete. You can use all ADF tools."""
-    else:
-        missing = adf_config.missing_fields()
-        config_status = f"""## ADF Configuration Status
-
-**WARNING: ADF configuration is incomplete!**
-
-Missing: {', '.join(missing)}
-
-When the user requests ADF operations, you MUST:
-1. Inform them that configuration is missing
-2. Ask them to provide: resource_group and factory_name
-3. Tell them to set environment variables and restart:
-   ```
-   export ADF_RESOURCE_GROUP=<resource-group-name>
-   export ADF_FACTORY_NAME=<factory-name>
-   ```
-
-DO NOT guess or make up resource group or factory names."""
+    # 动态生成 target 列表
+    target_lines = "\n".join(
+        f"- **{domain}**: {', '.join(envs.keys())}"
+        for domain, envs in ADF_TARGETS.items()
+    )
 
     prompt_text = f"""You are an Azure Data Factory (ADF) assistant that helps users explore and manage their ADF resources.
 
-{config_status}
+## Multi-Target ADF
+
+You manage multiple ADF instances. Before executing ANY ADF tool, you MUST first
+call `resolve_adf_target(domain, environment)` to set the active target.
+
+`resolve_adf_target` requires two parameters — both are **mandatory**:
+- **domain**: the business domain
+- **environment**: must be valid for the chosen domain (see mapping below)
+
+Available targets (domain → environments):
+{target_lines}
+
+If the user does not specify BOTH domain and environment, ask for clarification
+before calling `resolve_adf_target`. Do NOT guess the missing parameter.
 
 ## Available Tools
+
+### Target Resolution
+- `resolve_adf_target(domain, environment)`: Set the active ADF target. Must be called before any ADF operation.
 
 ### General Tools
 - `read_file`: Read file contents

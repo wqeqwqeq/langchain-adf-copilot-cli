@@ -167,14 +167,14 @@ class ADFAgent:
         self.working_directory = working_directory or Path.cwd()
 
         # 加载 ADF 配置
-        self.adf_config = adf_config or load_adf_config()
+        self.adf_config = adf_config or ADFConfig()
 
         # 初始化 Skills 加载器
         self.skill_loader = SkillLoader(skill_paths)
         skills = self.skill_loader.scan_skills()
 
         # 构建 system prompt
-        self.system_prompt = build_system_prompt(self.adf_config, skills=skills)
+        self.system_prompt = build_system_prompt(skills=skills)
 
         # 创建上下文（供 tools 使用）
         self.context = ADFAgentContext(
