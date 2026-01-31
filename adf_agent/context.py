@@ -47,6 +47,25 @@ class ADFConfig:
         return missing
 
 
+TargetMap = dict[str, dict[str, ADFConfig]]
+
+ADF_TARGETS: TargetMap = {
+    "sales": {
+        "dev": ADFConfig("rg-sales-dev", "adf-sales-dev", "00000000-0000-0000-0000-000000000001"),
+        "qa": ADFConfig("rg-sales-qa", "adf-sales-qa", "00000000-0000-0000-0000-000000000001"),
+        "prod": ADFConfig("rg-sales-prod", "adf-sales-prod", "00000000-0000-0000-0000-000000000001"),
+    },
+    "hr": {
+        "dev": ADFConfig("rg-hr-dev", "adf-hr-dev", "00000000-0000-0000-0000-000000000002"),
+        "qa": ADFConfig("rg-hr-qa", "adf-hr-qa", "00000000-0000-0000-0000-000000000002"),
+        "prod": ADFConfig("rg-hr-prod", "adf-hr-prod", "00000000-0000-0000-0000-000000000002"),
+    },
+    "personal": {
+        "prod": ADFConfig("adf", "stanley-adf", "ee5f77a1-2e59-4335-8bdf-f7ea476f6523"),
+    },
+}
+
+
 @dataclass
 class ADFAgentContext:
     """

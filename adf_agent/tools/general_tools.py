@@ -366,7 +366,7 @@ def resolve_adf_target(domain: str, environment: str,
         domain: Domain name (e.g. "sales", "hr", "personal")
         environment: Environment name (e.g. "dev", "qa", "prod")
     """
-    from ..gatekeeper import ADF_TARGETS
+    from ..context import ADF_TARGETS
 
     domain_targets = ADF_TARGETS.get(domain)
     if domain_targets is None:
@@ -386,11 +386,9 @@ def resolve_adf_target(domain: str, environment: str,
             f"Available: {', '.join(domain_targets.keys())}"
         )
 
-    adf = runtime.context.adf_config
-    old_label = f"{adf.factory_name}" if adf.is_configured() else None
-    adf.resource_group = config.resource_group
-    adf.factory_name = config.factory_name
-    adf.subscription_id = config.subscription_id
+    old = runtime.context.adf_config
+    old_label = f"{old.factory_name}" if old.is_configured() else None
+    runtime.context.adf_config = config
 
     new_label = f"{domain}/{environment} ({config.factory_name})"
     if old_label:

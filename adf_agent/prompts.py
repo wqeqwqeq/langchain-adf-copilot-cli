@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from langchain_core.messages import SystemMessage
 
-from .gatekeeper import ADF_TARGETS
+from .context import ADF_TARGETS
 from .skill_loader import SkillMetadata
 
 
