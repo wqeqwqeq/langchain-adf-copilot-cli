@@ -19,19 +19,19 @@ The core idea: **atomic tools + composable skills** save tokens while enabling a
 flowchart LR
     Q["🗣️ Which pipelines use Snowflake?"]
 
-    Q --> A["1️⃣ resolve_adf_target\nsales · dev"]
+    Q --> A["1️⃣ resolve_adf_target<br/>sales · dev"]
 
-    A --> B1["2️⃣ adf_pipeline_list\n242 pipelines saved"]
-    A --> B2["2️⃣ adf_linked_service_list\n18 linked services"]
-    A --> B3["2️⃣ adf_dataset_list\n65 datasets saved"]
+    A --> B1["2️⃣ adf_pipeline_list<br/>242 pipelines saved"]
+    A --> B2["2️⃣ adf_linked_service_list<br/>18 linked services"]
+    A --> B3["2️⃣ adf_dataset_list<br/>65 datasets saved"]
 
-    B1 --> C["3️⃣ Identify target\nSnowflake services"]
+    B1 --> C["3️⃣ Identify target<br/>Snowflake services"]
     B2 --> C
     B3 --> C
 
-    C --> D["4️⃣ read_file\n2–3 samples → learn schema"]
+    C --> D["4️⃣ read_file<br/>2–3 samples → learn schema"]
 
-    D --> E["5️⃣ exec_python\ncross-reference on disk"]
+    D --> E["5️⃣ exec_python<br/>cross-reference on disk"]
 
     E --> F["✅ 20 pipelines matched"]
 
