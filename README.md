@@ -1,6 +1,18 @@
 # ADF Agent
 
-A LangChain-based reasoning-action agent for Azure Data Factory. Think of it as a **mini Claude Code, but with ADF tools** — it reasons about your question, picks tools, executes them, inspects results, and iterates until it has an answer.
+A **highly scalable** Azure Data Factory agent that looks up and cross-references information across **Linked Services, Datasets, Pipelines, and Integration Runtimes**. Built on LangChain's `create_agent` API with Claude, it handles real-world ADF instances with hundreds of pipelines while keeping token usage minimal.
+
+**Model hosting**: support claude model hosted in **Anthorpic** or **Microsoft Foundry**
+
+**Why a CLI?** This is designed to facilitate local development and learning. A CLI lets you see exactly what's happening — the raw JSON returned by Azure, the Python code the LLM generates, the tool call sequence, token usage per turn — all in your terminal. Combined with local MLflow tracking, you get full transparency into every agent decision without deploying anything.
+
+The core idea: **atomic tools + composable skills** save tokens while enabling arbitrarily complex operations. Five design principles make it scale:
+
+1. **Atomic Tools** — tools only do list and get, nothing more
+2. **Skills as Business Logic** — multi-step workflows live in Markdown skills, not code
+3. **Reasoning-Action Loop** — think → plan → call tools → observe → replan → repeat until done
+4. **Progressive Cache Strategy** — ~40% average token savings per LLM call
+5. **`exec_python`** — inspired by Claude Code: explore files on disk, generate code to process data, avoid context window explosion
 
 ```
 $ uv run adf_agent "Which pipelines in sales dev use Snowflake?"
@@ -20,6 +32,158 @@ $ uv run adf_agent "Which pipelines in sales dev use Snowflake?"
   ...
 ```
 
+## Design Principles
+
+### 1. Atomic Tools — Only List and Get
+
+Tools are intentionally minimal. Each tool does exactly one thing: **list** all resources of a type, or **get** a single resource by name. No business logic, no cross-referencing, no filtering inside tools. This makes them reusable, composable, and cheap to call.
+
+| Tool | Operation |
+|------|-----------|
+| `adf_pipeline_list` | List all pipelines; save each as JSON to session dir |
+| `adf_pipeline_get` | Get one pipeline definition |
+| `adf_linked_service_list` | List all linked services (name + type) |
+| `adf_linked_service_get` | Get one linked service definition |
+| `adf_linked_service_test` | Test a linked service connection |
+| `adf_dataset_list` | List all datasets with linked service mappings |
+| `adf_integration_runtime_list` | List all Integration Runtimes |
+| `adf_integration_runtime_get` | Get IR status |
+| `adf_integration_runtime_enable` | Enable interactive authoring on a Managed IR |
+| `resolve_adf_target` | Set the active ADF instance (domain + environment) |
+
+The agent also has file-system tools inspired by Claude Code — `read_file`, `write_file`, `glob`, `grep`, `list_dir` — so it can explore JSON files saved by ADF tools, understand their schema, and then write targeted analysis code (see [Principle 5](#5-exec_python--avoid-context-window-explosion)).
+
+### 2. Business Logic Defined in Skills
+
+Complex multi-step workflows don't live in tools — they live in **Skills**. Skills are Markdown files in `.claude/skills/` with step-by-step instructions. At startup, only skill names and one-line descriptions are injected into the system prompt. When a user request matches a skill, the agent calls `load_skill()` to load the full instructions on-demand.
+
+This two-tier design means:
+- **Small system prompt** — skill catalog is just a summary table, saving tokens
+- **On-demand detail** — full instructions loaded only when needed
+- **Easy to extend** — drop a new `.md` file to add a new capability, no code changes
+
+Current skills:
+
+| Skill | Description |
+|-------|-------------|
+| `find-pipelines-by-service` | Cross-reference pipelines, datasets, and linked services to find all pipelines using a given service type (e.g. Snowflake). 7-step workflow: resolve target → list resources in parallel → identify matching services → read sample JSON to learn schema → write and run cross-reference script via `exec_python` → debug/retry → present results. |
+| `test-linked-service` | Test linked service connections with automatic IR detection and managed IR activation. Handles single service, by type, or all services. |
+
+### 3. Reasoning-Action Loop
+
+The agent follows a **ReAct (Reasoning + Acting)** loop powered by LangChain's `create_agent`:
+
+1. **Think** — Claude reads the question and reasons about what to do (Extended Thinking)
+2. **Plan** — Decides which tools to call and in what order
+3. **Act** — Calls one or more tools (supports parallel tool calls)
+4. **Observe** — Reads tool outputs, evaluates progress
+5. **Replan** — If the job isn't done, loops back to step 1 with updated context
+
+The agent keeps iterating until the question is fully answered. It is not a one-shot tool call — it is a loop that can recover from errors, adjust strategy based on intermediate results, and chain together multiple steps autonomously.
+
+### 4. Progressive Cache Strategy — ~40% Average Savings per LLM Call
+
+In a ReAct agent loop, each API call re-sends the full conversation history. Without caching, every call pays full price for all accumulated context — tool results, skill instructions, previous reasoning.
+
+Both provider classes (`CachedChatAnthropic` and `ChatAzureFoundryClaude`) override `_get_request_payload` to inject `cache_control` breakpoints automatically:
+
+```python
+def _get_request_payload(self, input_, *, stop=None, **kwargs):
+    kwargs.setdefault("cache_control", {"type": "ephemeral"})
+    return super()._get_request_payload(input_, stop=stop, **kwargs)
+```
+
+This places a cache breakpoint on the **last message block** of every API call. Each turn's breakpoint advances forward, so all previous content becomes cached prefix at 0.1× cost:
+
+```
+Call 1:  [system ✍] [user_msg, tool_result_1 ✍]                    ← all cache_creation
+Call 2:  [system ✓] [user_msg, tool_result_1 ✓] [tool_result_2 ✍]  ← prefix cached, only new part created
+Call 3:  [system ✓] [..., tool_result_2 ✓] [tool_result_3 ✍]       ← prefix cached, only new part created
+```
+
+Result: ~40% average token cost savings per LLM call across multi-step workflows. See [Progressive Prompt Caching](#progressive-prompt-caching) for full technical details including cache breakpoint layout and Extended Thinking invalidation behavior.
+
+### 5. `exec_python` — Avoid Context Window Explosion
+
+This is the most critical design choice for scalability, inspired by how Claude Code works.
+
+**The problem:** A real-world ADF instance easily has 200–500+ pipelines. A query like *"which pipelines use Snowflake linked services?"* requires cross-referencing every pipeline's activities and dataset references against linked service types. If you dump all pipeline JSON into the LLM context, that's 200K–500K+ tokens — **the context window simply cannot hold it**. Even if it could, the cost would be prohibitive. Without `exec_python`, this class of queries is impossible to complete on any non-trivial ADF instance. It does not scale.
+
+**The solution:** Mimic Claude Code's approach — give the agent tools to **explore** and **understand** data on disk first, then **generate and execute** code to process it:
+
+1. **List & Save** — `adf_pipeline_list()` fetches all 242 pipelines and saves each as a JSON file to the session workspace. Only a summary (`"242 pipelines saved to pipelines/"`) enters the LLM context.
+2. **Explore schema (`read_file`)** — The agent uses `read_file` to read 2–3 sample files (e.g. `datasets.json`, two pipeline JSONs) into context to understand the exact JSON structure and field names. This **does** consume tokens — but reading 2–3 samples is fundamentally different from reading all 242. This step is critical: the agent needs to see real data to write a correct script on the first try.
+3. **Generate & Execute** — Based on the schema learned in step 2, the agent writes a Python script and runs it via `exec_python` in a subprocess. The script reads **all 242 pipeline files** from disk, cross-references against datasets and linked services, and prints a concise result.
+4. **Observe & Iterate** — Only the script's printed output enters the LLM context. If the script has errors (e.g. wrong field names), the agent reads different sample files to diagnose, fixes the script, and retries.
+
+```
+Without exec_python:                    With exec_python:
+─────────────────────                   ─────────────────
+adf_pipeline_list()                     adf_pipeline_list()
+  → 242 pipelines as JSON                → "242 pipelines saved to pipelines/"
+  → ~500K tokens in context               → ~50 tokens in context
+
+LLM reads all 500K tokens              read_file(sample1.json, sample2.json)
+to cross-reference pipelines              → 2–3 samples to learn schema
+  → context window exceeded               → ~3K tokens in context
+  → impossible at scale
+                                        exec_python(analysis_script)
+                                          → script reads ALL 242 files from disk
+                                          → prints "20 pipelines matched"
+                                          → ~100 tokens in context
+
+Total: ~500K tokens (impossible)        Total: ~3K tokens (scalable)
+```
+
+For **pipeline-related linked service queries**, this is not an optimization — it is a **hard requirement**. An ADF with hundreds of pipelines generates hundreds of JSON files, each containing nested activities, dataset references, and parameters. Cross-referencing this against datasets and linked services is a data processing task, not a language task. `exec_python` moves the heavy lifting out of the LLM and into a Python subprocess where it belongs.
+
+#### Pre-loaded Runtime
+
+To keep `exec_python` scripts concise, a helper module (`_exec_runtime.py`) is deployed to the session directory once and auto-imported in every execution:
+
+```python
+# Available without importing:
+json, re, sys, Path, Counter, defaultdict
+
+# Helper functions:
+load_json("datasets.json")       # Load from session dir
+save_json("results.json", data)  # Save to session dir
+pretty_print(data)               # Pretty-print with truncation
+session_dir                      # Path to current session directory
+```
+
+Example — cross-referencing 242 pipelines × 65 datasets × 18 linked services entirely on disk:
+
+```python
+exec_python("""
+pipelines_dir = session_dir / "pipelines"
+datasets = load_json("datasets.json")
+linked_services = load_json("linked_services.json")
+
+# Build lookup: dataset name -> linked service name
+ds_to_ls = {d["name"]: d["linked_service"] for d in datasets}
+
+# Find Snowflake linked services
+snowflake_ls = {ls["name"] for ls in linked_services if "Snowflake" in ls["type"]}
+
+# Cross-reference: for each pipeline, check if any activity references a Snowflake dataset
+results = []
+for f in sorted(pipelines_dir.glob("*.json")):
+    pipeline = json.loads(f.read_text())
+    for activity in pipeline.get("properties", {}).get("activities", []):
+        for ds_ref in activity.get("inputs", []) + activity.get("outputs", []):
+            ds_name = ds_ref.get("referenceName", "")
+            if ds_to_ls.get(ds_name) in snowflake_ls:
+                results.append((pipeline["name"], ds_name, ds_to_ls[ds_name]))
+
+print(f"Found {len(results)} pipeline-dataset-service matches")
+for pipe, ds, ls in results:
+    print(f"  {pipe} -> {ds} -> {ls}")
+""")
+```
+
+The LLM reads 2–3 sample files to learn the schema (~3K tokens), then `exec_python` processes all 242 pipeline files on disk. The bulk data never enters the context.
+
 ## Architecture
 
 ```
@@ -38,7 +202,7 @@ User prompt
         │  tool calls
         ▼
 ┌─────────────────────────────────────────────┐
-│  LangGraph Agent Loop                       │
+│  LangChain Agent Loop (create_agent)         │
 │                                             │
 │  Tools                    Skills            │
 │  ├─ adf_pipeline_list     ├─ find-pipe...   │
@@ -60,131 +224,9 @@ User prompt
 └─────────────────────────────────────────────┘
 ```
 
-## How It Works
+## Observability with MLflow (Local)
 
-The agent follows a **ReAct (Reasoning + Acting)** loop powered by LangGraph:
-
-1. **Reason** — Claude reads the user's question, thinks (Extended Thinking), decides what to do
-2. **Act** — Calls one or more tools (can be parallel)
-3. **Observe** — Reads tool outputs, decides if more work is needed
-4. **Repeat** — Loops back to step 1 until the question is answered
-
-This is the same loop that powers tools like Claude Code, but scoped to ADF operations with domain-specific tools and knowledge baked into the system prompt.
-
-## Tools
-
-### ADF Tools
-
-| Tool | Description |
-|------|-------------|
-| `adf_pipeline_list` | List all pipelines; saves each as `pipelines/{name}.json` |
-| `adf_pipeline_get` | Get a specific pipeline definition |
-| `adf_dataset_list` | List all datasets with linked service mappings |
-| `adf_linked_service_list` | List linked services (name + type) |
-| `adf_linked_service_get` | Get full linked service definition |
-| `adf_linked_service_test` | Test a linked service connection |
-| `adf_integration_runtime_list` | List all Integration Runtimes |
-| `adf_integration_runtime_get` | Get IR status |
-| `adf_integration_runtime_enable` | Enable interactive authoring on a Managed IR |
-
-All ADF tools require a target to be set first via `resolve_adf_target(domain, environment)`.
-
-### General Tools
-
-| Tool | Description |
-|------|-------------|
-| `resolve_adf_target` | Switch the active ADF instance (domain + environment) |
-| `read_file` | Read file contents (with line numbers) |
-| `write_file` | Write content to a file |
-| `glob` | Find files by glob pattern |
-| `grep` | Search for regex patterns in files |
-| `list_dir` | List directory contents |
-| `exec_python` | Execute Python code in a subprocess |
-
-### Skill Tool
-
-| Tool | Description |
-|------|-------------|
-| `load_skill` | Load detailed instructions for a named skill |
-
-## Skills
-
-Skills are multi-step workflows defined as Markdown files in `.claude/skills/`. The agent discovers them at startup (names + descriptions go into the system prompt), and loads the full instructions on-demand via `load_skill()` when a user request matches.
-
-### `find-pipelines-by-service`
-
-Find all pipelines that use a specific type of linked service (e.g., Snowflake).
-
-Cross-references pipelines, datasets, and linked services through a 7-step workflow:
-1. Resolve target
-2. List pipelines, linked services, and datasets (parallel)
-3. Identify matching linked services by type
-4. Read sample JSON files to understand the exact schema
-5. Write and run a cross-reference script via `exec_python`
-6. Debug and retry if needed
-7. Present results as a table
-
-### `test-linked-service`
-
-Test linked service connections with automatic IR handling:
-1. Determine scope (single service, by type, or all)
-2. Get linked service details to find its IR reference
-3. Check IR status — enable interactive authoring for Managed IRs if needed
-4. Run the connection test
-5. Present results with actionable error suggestions
-
-## Saving Tokens with `exec_python`
-
-A core design principle: **keep large data out of the LLM context**.
-
-ADF tools save JSON data to the session workspace (`workspace/sessions/{timestamp}/`) instead of returning it inline. When the agent needs to analyze this data, it writes a Python script and runs it via `exec_python` in a subprocess. The script reads JSON from disk, processes it, and prints a summary — only the summary enters the LLM context.
-
-```
-Without exec_python:                    With exec_python:
-─────────────────────                   ─────────────────
-adf_pipeline_list()                     adf_pipeline_list()
-  → 42 pipelines as JSON                 → "42 pipelines saved to pipelines/"
-  → ~200K tokens in context               → ~50 tokens in context
-
-LLM reads all 200K tokens              exec_python(analysis_script)
-to find Snowflake pipelines              → script reads files from disk
-  → expensive                            → prints "7 pipelines matched"
-                                         → ~100 tokens in context
-                                         → cheap
-```
-
-### Pre-loaded Runtime
-
-To avoid boilerplate in every `exec_python` call, a helper module (`_exec_runtime.py`) is deployed to the session directory once and auto-imported:
-
-```python
-# These are available in every exec_python call without importing:
-json, re, sys, Path, Counter, defaultdict
-
-# Helper functions:
-load_json("datasets.json")       # Load from session dir
-save_json("results.json", data)  # Save to session dir
-pretty_print(data)               # Pretty-print with truncation
-session_dir                      # Path to current session directory
-```
-
-This means the agent can write concise analysis code:
-
-```python
-exec_python("""
-datasets = load_json("datasets.json")
-snowflake_ds = [d for d in datasets if "Snowflake" in d["type"]]
-print(f"Found {len(snowflake_ds)} Snowflake datasets")
-for d in snowflake_ds:
-    print(f"  - {d['name']} -> {d['linked_service']}")
-""")
-```
-
-Instead of wasting tokens on `import json; from pathlib import Path; ...` every time.
-
-## Observability with MLflow
-
-The agent uses `mlflow.langchain.autolog()` for zero-config tracing of all LangChain agent calls:
+All tracing is **local by default** — no remote server needed. The agent uses `mlflow.langchain.autolog()` for zero-config tracing, saving everything to `./mlruns/` on disk. This fits the CLI-first, local development philosophy: run the agent, then open MLflow UI to inspect exactly what happened.
 
 ```python
 # adf_agent/observability/mlflow_setup.py
@@ -198,14 +240,12 @@ Every agent invocation is logged as an MLflow run under the `ADF-Agent` experime
 - Token usage
 - Latency
 
-### Local tracking (default)
-
 ```bash
-# Runs are saved to ./mlruns/ by default
-mlflow ui  # View at http://localhost:5000
+# View local traces — no setup required
+mlflow ui  # http://localhost:5000
 ```
 
-### Remote tracking
+Optionally point to a remote server:
 
 ```bash
 export MLFLOW_TRACKING_URI=http://your-mlflow-server:5000
@@ -299,6 +339,57 @@ The CLI displays per-turn and total token usage with Anthropic Prompt Caching br
 ```
 
 System prompt and skills catalog are marked with `cache_control: ephemeral` (5-min TTL), so multi-turn conversations benefit from cache hits at 0.1x the cost of fresh input tokens.
+
+## Progressive Prompt Caching
+
+Anthropic's prompt cache is a **prefix match** across three layers: `tools → system → messages`. A cache hit means the entire prefix up to a breakpoint matches a previous request exactly. We use progressive (incremental) caching to maximize cache hits during tool loops.
+
+### The Problem
+
+In a ReAct agent loop, each API call re-sends the full conversation history. Without caching on the messages layer, every call pays full price for all previous content — tool results, skill instructions, etc.
+
+LangChain's `ChatAnthropic` has built-in support for injecting `cache_control` into messages, but LangGraph's `create_agent` never passes the `cache_control` kwarg, so it was unused.
+
+### The Fix
+
+Both provider classes (`CachedChatAnthropic` and `ChatAzureFoundryClaude`) override `_get_request_payload` to inject `cache_control` automatically:
+
+```python
+def _get_request_payload(self, input_, *, stop=None, **kwargs):
+    kwargs.setdefault("cache_control", {"type": "ephemeral"})
+    return super()._get_request_payload(input_, stop=stop, **kwargs)
+```
+
+This places a cache breakpoint on the **last message block of every API call**. Each turn's breakpoint advances forward, so all previous content becomes cached prefix.
+
+### How It Works
+
+```
+Call 1:  [system ✍] [user_msg, tool_result_1 ✍]           ← all cache_creation
+Call 2:  [system ✓] [user_msg, tool_result_1 ✓] [tool_result_2 ✍]  ← prefix read, new creation
+Call 3:  [system ✓] [..., tool_result_2 ✓] [tool_result_3 ✍]       ← prefix read, new creation
+```
+
+Each call only pays `cache_creation` (1.25x) for **new** messages. Everything before is `cache_read` at 0.1x.
+
+### Cache Breakpoints (3 of 4 max)
+
+| # | Location | Content |
+|---|----------|---------|
+| 1 | system block 1 | Main system prompt (~1,700 tokens) |
+| 2 | system block 2 | Skill catalog summary |
+| 3 | last message block (auto) | Conversation history up to current point |
+
+### Multi-Turn: Extended Thinking Cache Invalidation
+
+When Extended Thinking is enabled, thinking blocks are stripped from history when the user sends a new message. This changes the message sequence, causing a **messages layer cache miss** on the first call of each new turn. The `tools` and `system` layers remain cached.
+
+| Event | tools | system | messages |
+|-------|-------|--------|----------|
+| Same turn, tool loop | cache_read | cache_read | cache_read + creation for new |
+| New user message (thinking stripped) | cache_read | cache_read | re-creation |
+
+For full details, see [docs/prompt-caching.md](docs/prompt-caching.md).
 
 ## Project Structure
 

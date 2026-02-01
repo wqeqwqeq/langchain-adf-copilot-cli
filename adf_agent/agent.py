@@ -28,7 +28,7 @@ load_dotenv(override=True)
 
 
 # Default configuration
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "claude-sonnet-4-5"
 DEFAULT_MAX_TOKENS = 16000
 DEFAULT_TEMPERATURE = 1.0  # Extended Thinking requires temperature = 1.0
 DEFAULT_THINKING_BUDGET = 10000
