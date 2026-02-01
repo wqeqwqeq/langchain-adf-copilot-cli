@@ -30,6 +30,12 @@ def read_file(file_path: str, runtime: ToolRuntime[ADFAgentContext]) -> str:
     """
     path = resolve_path(file_path, runtime.context.working_directory)
 
+    # Fallback: try session_dir for relative paths (ADF tools save files there)
+    if not path.exists() and not Path(file_path).is_absolute():
+        session_path = resolve_path(file_path, runtime.context.session_dir)
+        if session_path.exists():
+            path = session_path
+
     if not path.exists():
         return f"[FAILED] File not found: {file_path}"
 

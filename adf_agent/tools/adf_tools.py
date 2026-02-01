@@ -87,8 +87,8 @@ Found {len(names)} pipelines. Each saved to {pipelines_dir}/{{name}}.json
 {chr(10).join(f"  - {name}" for name in names[:50])}
 {"  ... and more" if len(names) > 50 else ""}
 
-Use read_file("pipelines/<name>.json") to explore a specific pipeline and understand the json structure.
-Write code and use exec_python to complete complex analysis tasks if needed. 
+Use read_file("{pipelines_dir}/<name>.json") to explore a specific pipeline and understand the json structure.
+Write code and use exec_python to complete complex analysis tasks if needed.
 """
 
     except Exception as e:
@@ -278,7 +278,7 @@ Found {len(datasets)} datasets. Saved to {datasets_path}
 {chr(10).join(summary_lines[:50])}
 {"  ... and more" if len(datasets) > 50 else ""}
 
-Use read_file("datasets.json") to inspect the full list.
+Use read_file("{datasets_path}") to inspect the full list.
 Use exec_python to cross-reference datasets with pipelines.
 """
 
