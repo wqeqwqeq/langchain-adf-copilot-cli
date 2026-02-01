@@ -69,8 +69,16 @@ def get_claude_config() -> dict:
         }
     else:
         from langchain_anthropic import ChatAnthropic
+
+        class CachedChatAnthropic(ChatAnthropic):
+            """ChatAnthropic with progressive prompt caching on every API call."""
+
+            def _get_request_payload(self, input_, *, stop=None, **kwargs):
+                kwargs.setdefault("cache_control", {"type": "ephemeral"})
+                return super()._get_request_payload(input_, stop=stop, **kwargs)
+
         return {
-            "model_class": ChatAnthropic,
+            "model_class": CachedChatAnthropic,
             "init_kwargs": {
                 "api_key": os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"),
                 "base_url": os.getenv("ANTHROPIC_BASE_URL"),

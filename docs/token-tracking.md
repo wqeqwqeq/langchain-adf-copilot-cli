@@ -39,16 +39,27 @@ Terminal display
 
 Anthropic's prompt caching allows fixed content like the system prompt to be cached server-side. Subsequent API calls can read directly from the cache, avoiding reprocessing the same tokens.
 
+> For a detailed explanation of progressive caching, multi-turn behavior, and Extended Thinking cache invalidation, see [docs/prompt-caching.md](prompt-caching.md).
+
 ### How to Enable
 
-In `prompts.py`, system prompt content blocks include `cache_control`:
+Caching is enabled at two levels:
+
+1. **System prompt** — `cache_control` on content blocks in `prompts.py`
+2. **Messages (progressive)** — `_get_request_payload` override in both `azure_claude.py` and `agent.py` auto-adds `cache_control` to the last message block on every API call
 
 ```python
+# prompts.py — system-level breakpoints
 blocks = [
     {"type": "text", "text": prompt_text, "cache_control": {"type": "ephemeral"}},
 ]
 if skills:
     blocks.append({"type": "text", "text": skills_text, "cache_control": {"type": "ephemeral"}})
+
+# azure_claude.py / agent.py — message-level breakpoint (progressive)
+def _get_request_payload(self, input_, *, stop=None, **kwargs):
+    kwargs.setdefault("cache_control", {"type": "ephemeral"})
+    return super()._get_request_payload(input_, stop=stop, **kwargs)
 ```
 
 `"type": "ephemeral"` indicates a cache with a 5-minute TTL.

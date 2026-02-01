@@ -9,6 +9,10 @@ from anthropic import AnthropicFoundry, AsyncAnthropicFoundry
 class ChatAzureFoundryClaude(ChatAnthropic):
     """ChatAnthropic for Azure AI Foundry (API Key auth)."""
 
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        kwargs.setdefault("cache_control", {"type": "ephemeral"})
+        return super()._get_request_payload(input_, stop=stop, **kwargs)
+
     @cached_property
     def _client(self) -> AnthropicFoundry:
         return AnthropicFoundry(
