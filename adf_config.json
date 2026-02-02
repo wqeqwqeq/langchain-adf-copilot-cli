@@ -1,0 +1,43 @@
+{
+  "sales": {
+    "dev": {
+      "resource_group": "rg-sales-dev",
+      "resource_name": "adf-sales-dev",
+      "subscription_id": "00000000-0000-0000-0000-000000000001"
+    },
+    "qa": {
+      "resource_group": "rg-sales-qa",
+      "resource_name": "adf-sales-qa",
+      "subscription_id": "00000000-0000-0000-0000-000000000001"
+    },
+    "prod": {
+      "resource_group": "rg-sales-prod",
+      "resource_name": "adf-sales-prod",
+      "subscription_id": "00000000-0000-0000-0000-000000000001"
+    }
+  },
+  "hr": {
+    "dev": {
+      "resource_group": "rg-hr-dev",
+      "resource_name": "adf-hr-dev",
+      "subscription_id": "00000000-0000-0000-0000-000000000002"
+    },
+    "qa": {
+      "resource_group": "rg-hr-qa",
+      "resource_name": "adf-hr-qa",
+      "subscription_id": "00000000-0000-0000-0000-000000000002"
+    },
+    "prod": {
+      "resource_group": "rg-hr-prod",
+      "resource_name": "adf-hr-prod",
+      "subscription_id": "00000000-0000-0000-0000-000000000002"
+    }
+  },
+  "personal": {
+    "prod": {
+      "resource_group": "adf",
+      "resource_name": "stanley-adf",
+      "subscription_id": "ee5f77a1-2e59-4335-8bdf-f7ea476f6523"
+    }
+  }
+}

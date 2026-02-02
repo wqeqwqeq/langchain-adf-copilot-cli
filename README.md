@@ -307,7 +307,26 @@ uv sync
 
 ### Configure
 
-Create a `.env` file (or run `uv run adf_agent` for guided onboarding):
+**1. ADF targets** — update `adf_config.json` in the project root with your ADF instances:
+
+```json
+{
+  "my_domain": {
+    "dev": {
+      "resource_group": "rg-dev",
+      "resource_name": "adf-dev",
+      "subscription_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "prod": {
+      "resource_group": "rg-prod",
+      "resource_name": "adf-prod",
+      "subscription_id": "00000000-0000-0000-0000-000000000000"
+    }
+  }
+}
+```
+
+**2. Environment variables** — create a `.env` file (or run `uv run adf_agent` for guided onboarding):
 
 ```env
 # Model provider
